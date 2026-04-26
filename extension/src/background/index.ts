@@ -39,6 +39,20 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   }
 });
 
+// Track whether any side panel is currently open. Each SidePanel React tree
+// opens a long-lived port; we count active ports here. When zero, the user
+// is not looking at Torya, so silent runs would happen invisibly — in that
+// case we transparently fall back to the system terminal so they at least
+// see Terminal.app pop up.
+let openSidePanels = 0;
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'sidepanel') return;
+  openSidePanels += 1;
+  port.onDisconnect.addListener(() => {
+    openSidePanels = Math.max(0, openSidePanels - 1);
+  });
+});
+
 // Fallback: explicit click handler in case openPanelOnActionClick is unset.
 chrome.action.onClicked.addListener(async (tab) => {
   if (tab.windowId !== undefined) {
@@ -323,17 +337,35 @@ async function runAgentForError(id: string, agent: AgentName): Promise<{ ok: boo
     return { ok: false };
   }
   const prompt = buildPrompt(err);
-  const via = (s.settings.terminalPreference as 'cmux' | 'system' | 'silent');
+  let via = s.settings.terminalPreference as 'cmux' | 'system' | 'silent';
+  // Silent runs leave no UI trace. If the user isn't looking at the side
+  // panel, they'd have no way to know an agent is running — promote to the
+  // system terminal so something visible happens.
+  if (via === 'silent' && openSidePanels === 0) {
+    via = 'system';
+  }
+  // Default tracked from the chosen mode; bridge will confirm with a
+  // started-progress message including the real `tracked` flag.
+  let tracked = via === 'silent';
   await updateError(id, {
     status: 'running',
     run: {
       agent,
       via,
+      tracked,
       prompt,
       startedAt: Date.now(),
     },
   });
-  const onMsg = (m: BridgeResponse) => log('agent:', m.kind, m.data);
+  const onMsg = (m: BridgeResponse) => {
+    log('agent:', m.kind, m.data);
+    if (m.kind === 'progress') {
+      const d = m.data as { stage?: string; tracked?: boolean } | undefined;
+      if (d?.stage === 'started' && typeof d.tracked === 'boolean') {
+        tracked = d.tracked;
+      }
+    }
+  };
   try {
     const { done } = bridge.stream(
       'run-agent',
@@ -348,11 +380,31 @@ async function runAgentForError(id: string, agent: AgentName): Promise<{ ok: boo
       onMsg
     );
     const final = await done;
-    const result: 'fixed' | 'failed' = final.kind === 'exit' ? 'fixed' : 'failed';
     const cur = (await load()).errors.find((e) => e.id === id);
+    if (final.kind !== 'exit') {
+      await updateError(id, {
+        status: 'failed',
+        run: cur?.run ? { ...cur.run, endedAt: Date.now(), result: 'failed' } : undefined,
+      });
+      return { ok: false };
+    }
+    if (!tracked) {
+      // Untracked: agent run was handed off to a user-visible terminal.
+      // We don't know if it succeeded — surface "opened in <terminal>"
+      // and let the user judge.
+      await updateError(id, {
+        status: 'dispatched',
+        run: cur?.run
+          ? { ...cur.run, tracked: false, endedAt: Date.now(), result: 'dispatched' }
+          : undefined,
+      });
+      return { ok: true };
+    }
+    const code = (final.data as { code?: number } | undefined)?.code ?? 0;
+    const result: 'fixed' | 'failed' = code === 0 ? 'fixed' : 'failed';
     await updateError(id, {
       status: result,
-      run: cur?.run ? { ...cur.run, endedAt: Date.now(), result } : undefined,
+      run: cur?.run ? { ...cur.run, tracked: true, endedAt: Date.now(), result } : undefined,
     });
     return { ok: result === 'fixed' };
   } catch (e) {

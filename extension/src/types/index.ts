@@ -2,7 +2,13 @@ export type AgentName = 'claude' | 'codex' | 'gemini' | 'cmux';
 
 export type ErrorSource = 'console' | 'network' | 'dom';
 export type ErrorSeverity = 'error' | 'warn';
-export type ErrorStatus = 'new' | 'running' | 'fixed' | 'failed' | 'dismissed';
+export type ErrorStatus =
+  | 'new'
+  | 'running'
+  | 'fixed'
+  | 'failed'
+  | 'dispatched'
+  | 'dismissed';
 
 export interface DevError {
   id: string;
@@ -28,10 +34,14 @@ export interface DevError {
 export interface AgentRun {
   agent: AgentName;
   via: 'system' | 'silent' | 'cmux' | 'cmux-fallback';
+  // false ⇒ bridge can't observe completion (agent runs in a user-visible
+  // terminal). The card shows "opened in <terminal>" and never auto-flips
+  // to fix completed.
+  tracked: boolean;
   prompt: string;
   startedAt: number;
   endedAt?: number;
-  result?: 'fixed' | 'failed';
+  result?: 'fixed' | 'failed' | 'dispatched';
 }
 
 export interface Workspace {

@@ -11,6 +11,7 @@ export function SidePanel() {
   const [state, setState] = useState<StorageSchema | null>(null);
   const [view, setView] = useState<View>('live');
   const [activeOrigin, setActiveOrigin] = useState<string | null>(null);
+  const [showFixed, setShowFixed] = useState(false);
   // Re-render once a second so any in-flight agent run shows live elapsed.
   // Hook stays at the top of the component to satisfy rules of hooks.
   const [, setNowTick] = useState(0);
@@ -26,9 +27,22 @@ export function SidePanel() {
     void load().then((s) => mounted && setState(s));
     const onChanged = () => void load().then((s) => mounted && setState(s));
     chrome.storage.onChanged.addListener(onChanged);
+    // Long-lived port lets the background SW know a side panel is open.
+    // It uses that to decide whether silent runs are visible to the user.
+    let port: chrome.runtime.Port | null = null;
+    try {
+      port = chrome.runtime.connect({ name: 'sidepanel' });
+    } catch {
+      /* runtime invalidated — ignore */
+    }
     return () => {
       mounted = false;
       chrome.storage.onChanged.removeListener(onChanged);
+      try {
+        port?.disconnect();
+      } catch {
+        /* ignore */
+      }
     };
   }, []);
 
@@ -102,9 +116,15 @@ export function SidePanel() {
     ? state.workspaces.find((w) => w.originPattern === activeOrigin) ?? state.workspaces[0]
     : state.workspaces[0];
   const agentNames = state.agents.filter((a) => a.available).map((a) => a.name).join(' ');
-  const recent = isDev
-    ? state.errors.filter((e) => e.origin === activeOrigin).slice(0, 30)
+  // Split into "active" (needs attention) and "done" (fixed/dismissed). The
+  // panel focuses on active by default; done is collapsible at the bottom.
+  const allForOrigin = isDev
+    ? state.errors.filter((e) => e.origin === activeOrigin)
     : [];
+  const isDone = (e: DevError) =>
+    e.status === 'fixed' || e.status === 'dismissed';
+  const active = allForOrigin.filter((e) => !isDone(e)).slice(0, 30);
+  const done = allForOrigin.filter(isDone).slice(0, 30);
 
   return (
     <div className="flex h-full flex-col">
@@ -119,6 +139,14 @@ export function SidePanel() {
               🌉 {state.bridge.version ? '✅' : '❌'}
             </span>
             <span className="ml-auto flex items-center gap-1">
+              {done.length > 0 && (
+                <span
+                  className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[11px] text-emerald-400"
+                  title={`${done.length} resolved on this page`}
+                >
+                  ✓ {done.length}
+                </span>
+              )}
               {state.errors.length > 0 && (
                 <button
                   className="rounded px-1.5 py-0.5 hover:bg-torya-surface hover:text-torya-text"
@@ -155,39 +183,60 @@ export function SidePanel() {
 
       <main
         className={`flex-1 overflow-auto px-3 py-2 ${
-          recent.length === 0 ? 'flex items-center justify-center' : ''
+          active.length === 0 && !showFixed ? 'flex flex-col' : ''
         }`}
       >
         {!isDev ? (
-          <div className="text-center text-xs text-torya-muted">
+          <div className="m-auto text-center text-xs text-torya-muted">
             Not a development tab.
             <div className="mt-1 text-torya-muted-2">
               Switch to a <code className="text-torya-text">localhost</code> page
               to see live errors.
             </div>
           </div>
-        ) : recent.length === 0 ? (
-          <div className="text-center text-xs text-torya-muted">
-            Watching <span className="font-mono text-torya-text">{activeOrigin}</span>.
+        ) : active.length === 0 && !showFixed ? (
+          <div className="m-auto text-center text-xs text-torya-muted">
+            {done.length > 0
+              ? `All clear · ${done.length} resolved`
+              : 'Watching '}
+            {done.length === 0 && (
+              <span className="font-mono text-torya-text">{activeOrigin}</span>
+            )}
             <div className="mt-1 text-torya-muted-2">
-              Trigger an error in the page and it will appear here.
+              {done.length > 0
+                ? 'Next error will show up here.'
+                : 'Trigger an error in the page and it will appear here.'}
             </div>
           </div>
         ) : (
           <ul className="w-full space-y-1.5">
-            {recent.map((e) => (
+            {active.map((e) => (
               <LogRow key={e.id} err={e} />
             ))}
+            {showFixed &&
+              done.map((e) => <LogRow key={e.id} err={e} dim />)}
           </ul>
+        )}
+        {isDev && done.length > 0 && (
+          <button
+            className="mt-3 w-full rounded border border-dashed border-torya-border px-2 py-1.5 text-[11px] text-torya-muted-2 hover:border-torya-border-strong hover:text-torya-muted"
+            onClick={() => setShowFixed((v) => !v)}
+          >
+            {showFixed ? `Hide ${done.length} resolved` : `Show ${done.length} resolved`}
+          </button>
         )}
       </main>
     </div>
   );
 }
 
-function LogRow({ err }: { err: DevError }) {
+function LogRow({ err, dim = false }: { err: DevError; dim?: boolean }) {
   return (
-    <li className="rounded-md border border-torya-border bg-torya-surface text-xs">
+    <li
+      className={`rounded-md border border-torya-border bg-torya-surface text-xs ${
+        dim ? 'opacity-60' : ''
+      }`}
+    >
       <CapturedStep err={err} />
       {err.run && <RunStep err={err} />}
     </li>
@@ -230,6 +279,7 @@ function RunStep({ err }: { err: DevError }) {
   const isRunning = err.status === 'running';
   const isFixed = err.status === 'fixed';
   const isFailed = err.status === 'failed';
+  const isDispatched = err.status === 'dispatched';
 
   const elapsedMs = (run.endedAt ?? Date.now()) - run.startedAt;
   const elapsed = formatDuration(elapsedMs);
@@ -238,7 +288,9 @@ function RunStep({ err }: { err: DevError }) {
     ? 'text-emerald-400'
     : isFailed
       ? 'text-torya-warn'
-      : 'text-torya-accent-strong';
+      : isDispatched
+        ? 'text-torya-muted'
+        : 'text-torya-accent-strong';
 
   const headerIcon = isRunning ? (
     <Spinner />
@@ -246,6 +298,8 @@ function RunStep({ err }: { err: DevError }) {
     <span className="text-emerald-400">✓</span>
   ) : isFailed ? (
     <span className="text-torya-warn">✗</span>
+  ) : isDispatched ? (
+    <span className="text-torya-muted">↗</span>
   ) : null;
 
   const headerText = isRunning
@@ -254,7 +308,9 @@ function RunStep({ err }: { err: DevError }) {
       ? `fix completed`
       : isFailed
         ? `agent run failed`
-        : `done`;
+        : isDispatched
+          ? `opened in ${run.via}`
+          : `done`;
 
   return (
     <div className="border-t border-torya-border bg-torya-bg/40 px-2.5 py-2">
@@ -263,11 +319,13 @@ function RunStep({ err }: { err: DevError }) {
         <span className={`shrink-0 text-[11px] font-semibold ${headerColor}`}>
           {headerText}
         </span>
-        <span className="shrink-0 rounded bg-torya-surface px-1.5 py-0.5 text-[10px] text-torya-muted">
-          {run.via}
-        </span>
+        {!isDispatched && (
+          <span className="shrink-0 rounded bg-torya-surface px-1.5 py-0.5 text-[10px] text-torya-muted">
+            {run.via}
+          </span>
+        )}
         <span className="ml-auto shrink-0 font-mono text-[11px] text-torya-muted">
-          {elapsed}
+          {isDispatched ? '—' : elapsed}
         </span>
       </div>
       <div className="mt-1 line-clamp-2 text-[11px] text-torya-muted">
