@@ -9,6 +9,7 @@ import {
   findWorkspaceForOrigin,
   upsertWorkspace,
 } from '@/lib/storage';
+import { isLocalhost } from '@/lib/origin';
 import { uuid } from '@/lib/uuid';
 import type {
   AgentInfo,
@@ -105,6 +106,14 @@ async function handleMessage(msg: ExtMsg): Promise<unknown> {
     case 'bridge/pick-folder':
       if (!bridge.isConnected()) await tryConnectBridge();
       return await bridge.send('pick-folder', { title: msg.title ?? 'Select project folder' });
+    case 'bridge/detect-project': {
+      if (!isLocalhost(msg.origin)) return { ok: false };
+      const existing = findWorkspaceForOrigin((await load()).workspaces, msg.origin);
+      if (existing) return { ok: true, workspace: existing };
+      if (!bridge.isConnected()) await tryConnectBridge();
+      const ws = await tryAutoMap(msg.origin);
+      return { ok: !!ws, workspace: ws };
+    }
     case 'workspace/upsert':
       // Forward updated workspace list to bridge.
       const s = await load();
@@ -122,28 +131,48 @@ async function handleMessage(msg: ExtMsg): Promise<unknown> {
   }
 }
 
-// In-memory dedup: signature → last seen ts. Skip if seen within DEDUP_WINDOW.
+// In-memory dedup: signature → last seen ts. Skip if seen within window.
+// Network errors get a longer window because a single underlying bug usually
+// produces a burst of identical 5xx (e.g. retries, parallel chunk uploads),
+// and we don't want to spam the side panel or the agent runner.
 const DEDUP_WINDOW_MS = 5_000;
+const NETWORK_DEDUP_WINDOW_MS = 60_000;
 const recentSignatures = new Map<string, number>();
 
-function shouldSkipDuplicate(sig: string): boolean {
+function shouldSkipDuplicate(sig: string, windowMs = DEDUP_WINDOW_MS): boolean {
   const now = Date.now();
   const prev = recentSignatures.get(sig);
-  if (prev !== undefined && now - prev < DEDUP_WINDOW_MS) return true;
+  if (prev !== undefined && now - prev < windowMs) return true;
   recentSignatures.set(sig, now);
-  // Best-effort cleanup.
   if (recentSignatures.size > 200) {
     for (const [k, v] of recentSignatures) {
-      if (now - v > DEDUP_WINDOW_MS) recentSignatures.delete(k);
+      if (now - v > Math.max(windowMs, DEDUP_WINDOW_MS)) {
+        recentSignatures.delete(k);
+      }
     }
   }
   return false;
 }
 
-// Torya is for local development. Drop errors from production sites so the
-// live log doesn't fill with noise from regular browsing.
-function isLocalhost(origin: string): boolean {
-  return /^https?:\/\/(localhost|127\.0\.0\.1|\[?::1]?|0\.0\.0\.0)(:|\/|$)/i.test(origin);
+// Per-workspace agent-run cooldown. Once an agent run starts for a workspace,
+// suppress further auto-triggers for AGENT_COOLDOWN_MS even if new errors come
+// in. The user can still manually re-run from the side panel.
+const AGENT_COOLDOWN_MS = 60_000;
+const lastAgentRunAt = new Map<string, number>();
+
+async function shouldAutoRunAgent(workspaceId: string): Promise<boolean> {
+  const now = Date.now();
+  const last = lastAgentRunAt.get(workspaceId);
+  if (last !== undefined && now - last < AGENT_COOLDOWN_MS) return false;
+  // Also skip if any error is currently 'running' for this workspace —
+  // avoids spawning a parallel terminal while the previous agent is working.
+  const s = await load();
+  const inflight = s.errors.some(
+    (e) => e.workspaceId === workspaceId && e.status === 'running',
+  );
+  if (inflight) return false;
+  lastAgentRunAt.set(workspaceId, now);
+  return true;
 }
 
 async function ingestConsole(p: ConsoleErrorPayload): Promise<DevError | null> {
@@ -174,7 +203,9 @@ async function ingestConsole(p: ConsoleErrorPayload): Promise<DevError | null> {
     status: 'new',
   };
   await pushError(e);
-  if (ws) void runAgentForError(e.id, s.settings.defaultAgent);
+  if (ws && (await shouldAutoRunAgent(ws.id))) {
+    void runAgentForError(e.id, s.settings.defaultAgent);
+  }
   return e;
 }
 
@@ -184,7 +215,7 @@ async function ingestNetwork(p: NetworkErrorPayload): Promise<DevError | null> {
   if (!s.settings.captureRules.network) return null;
 
   const sig = `n:${p.method}:${p.url}:${p.status}`;
-  if (shouldSkipDuplicate(sig)) return null;
+  if (shouldSkipDuplicate(sig, NETWORK_DEDUP_WINDOW_MS)) return null;
 
   let ws = findWorkspaceForOrigin(s.workspaces, p.origin);
   if (!ws) ws = await tryAutoMap(p.origin);
@@ -202,7 +233,9 @@ async function ingestNetwork(p: NetworkErrorPayload): Promise<DevError | null> {
     status: 'new',
   };
   await pushError(e);
-  if (ws && p.status >= 500) void runAgentForError(e.id, s.settings.defaultAgent);
+  if (ws && p.status >= 500 && (await shouldAutoRunAgent(ws.id))) {
+    void runAgentForError(e.id, s.settings.defaultAgent);
+  }
   return e;
 }
 
@@ -283,21 +316,46 @@ async function runAgentForError(id: string, agent: AgentName): Promise<{ ok: boo
     log('no workspace mapping for', err.origin);
     return { ok: false };
   }
-  await updateError(id, { status: 'running' });
   const prompt = buildPrompt(err);
+  const via = (s.settings.terminalPreference as 'cmux' | 'system' | 'silent');
+  await updateError(id, {
+    status: 'running',
+    run: {
+      agent,
+      via,
+      prompt,
+      startedAt: Date.now(),
+    },
+  });
   const onMsg = (m: BridgeResponse) => log('agent:', m.kind, m.data);
   try {
     const { done } = bridge.stream(
       'run-agent',
-      { agent, prompt, cwd: ws.rootPath, terminal: ws.terminalPreference },
+      {
+        agent,
+        prompt,
+        cwd: ws.rootPath,
+        // Global setting wins over the per-workspace default so toggling
+        // "silent" in Settings applies immediately without re-mapping.
+        terminal: via,
+      },
       onMsg
     );
     const final = await done;
-    await updateError(id, { status: final.kind === 'exit' ? 'fixed' : 'failed' });
-    return { ok: final.kind === 'exit' };
+    const result: 'fixed' | 'failed' = final.kind === 'exit' ? 'fixed' : 'failed';
+    const cur = (await load()).errors.find((e) => e.id === id);
+    await updateError(id, {
+      status: result,
+      run: cur?.run ? { ...cur.run, endedAt: Date.now(), result } : undefined,
+    });
+    return { ok: result === 'fixed' };
   } catch (e) {
     log('run-agent failed', e);
-    await updateError(id, { status: 'failed' });
+    const cur = (await load()).errors.find((e) => e.id === id);
+    await updateError(id, {
+      status: 'failed',
+      run: cur?.run ? { ...cur.run, endedAt: Date.now(), result: 'failed' } : undefined,
+    });
     return { ok: false };
   }
 }

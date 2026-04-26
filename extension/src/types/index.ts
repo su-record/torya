@@ -22,6 +22,16 @@ export interface DevError {
   };
   workspaceId?: string;
   status: ErrorStatus;
+  run?: AgentRun;
+}
+
+export interface AgentRun {
+  agent: AgentName;
+  via: 'system' | 'silent' | 'cmux' | 'cmux-fallback';
+  prompt: string;
+  startedAt: number;
+  endedAt?: number;
+  result?: 'fixed' | 'failed';
 }
 
 export interface Workspace {
@@ -30,7 +40,7 @@ export interface Workspace {
   originPattern: string;
   rootPath: string;
   defaultAgent: AgentName;
-  terminalPreference: 'cmux' | 'system';
+  terminalPreference: 'cmux' | 'system' | 'silent';
 }
 
 export interface AgentInfo {
@@ -50,7 +60,7 @@ export interface CaptureRules {
 
 export interface Settings {
   defaultAgent: AgentName;
-  terminalPreference: 'cmux' | 'system';
+  terminalPreference: 'cmux' | 'system' | 'silent';
   autoDirectMode: boolean;
   captureRules: CaptureRules;
   ignoreOrigins: string[];
