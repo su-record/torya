@@ -177,39 +177,50 @@ func (h *Handler) runAgent(req proto.Request) {
 			via = "cmux-fallback"
 		}
 	case "silent":
-		_ = h.w.Write(proto.Progress(req.ID, map[string]string{
-			"stage": "spawn",
-			"via":   "silent",
-		}))
-		ch, err := terminal.Silent().Run(a.Cwd, cmdLine)
-		if err != nil {
-			_ = h.w.Write(proto.Err(req.ID, "spawn_failed", err.Error()))
-			return
-		}
-		_ = h.w.Write(proto.Progress(req.ID, map[string]string{
-			"stage":   "started",
-			"channel": ch,
-		}))
-		via = "silent"
+		h.runWithSpawner(req, "silent", terminal.Silent(), a.Cwd, cmdLine, start)
+		return
 	}
 
 	if via == "" || via == "cmux-fallback" {
-		_ = h.w.Write(proto.Progress(req.ID, map[string]string{
-			"stage": "spawn",
-			"via":   "system",
-		}))
-		ch, err := terminal.System().Run(a.Cwd, cmdLine)
-		if err != nil {
-			_ = h.w.Write(proto.Err(req.ID, "spawn_failed", err.Error()))
-			return
-		}
-		_ = h.w.Write(proto.Progress(req.ID, map[string]string{
-			"stage":   "started",
-			"channel": ch,
-		}))
+		h.runWithSpawner(req, "system", terminal.System(), a.Cwd, cmdLine, start)
 	}
+}
 
-	_ = h.w.Write(proto.Exit(req.ID, 0, time.Since(start).Milliseconds()))
+// runWithSpawner dispatches to a Spawner, reports spawn/started progress,
+// and waits on the spawner's `done` channel before writing the final Exit
+// frame. If the spawner can't observe completion (done == nil) the run is
+// reported as untracked so the extension can render it as \"opened in <X>\"
+// rather than claiming a result.
+func (h *Handler) runWithSpawner(
+	req proto.Request,
+	via string,
+	sp terminal.Spawner,
+	cwd, cmdLine string,
+	start time.Time,
+) {
+	_ = h.w.Write(proto.Progress(req.ID, map[string]string{
+		"stage": "spawn",
+		"via":   via,
+	}))
+	ch, done, err := sp.Run(cwd, cmdLine)
+	if err != nil {
+		_ = h.w.Write(proto.Err(req.ID, "spawn_failed", err.Error()))
+		return
+	}
+	_ = h.w.Write(proto.Progress(req.ID, map[string]any{
+		"stage":   "started",
+		"channel": ch,
+		"tracked": done != nil,
+	}))
+	if done == nil {
+		_ = h.w.Write(proto.Exit(req.ID, 0, time.Since(start).Milliseconds()))
+		return
+	}
+	exitCode, ok := <-done
+	if !ok {
+		exitCode = -1
+	}
+	_ = h.w.Write(proto.Exit(req.ID, exitCode, time.Since(start).Milliseconds()))
 }
 
 func buildCommand(agent, prompt string) string {
@@ -258,7 +269,7 @@ func (h *Handler) openTerminal(req proto.Request) {
 		_ = h.w.Write(proto.Err(req.ID, "cwd_not_allowed", err.Error()))
 		return
 	}
-	ch, err := terminal.System().Run(a.Cwd, "echo Torya bridge — workspace ready")
+	ch, _, err := terminal.System().Run(a.Cwd, "echo Torya bridge — workspace ready")
 	if err != nil {
 		_ = h.w.Write(proto.Err(req.ID, "spawn_failed", err.Error()))
 		return

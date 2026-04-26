@@ -11,7 +11,7 @@ type linuxSpawner struct{}
 
 func newSystem() Spawner { return linuxSpawner{} }
 
-func (linuxSpawner) Run(cwd, cmd string) (string, error) {
+func (linuxSpawner) Run(cwd, cmd string) (string, <-chan int, error) {
 	candidates := []struct {
 		bin  string
 		args func(cwd, cmd string) []string
@@ -35,8 +35,8 @@ func (linuxSpawner) Run(cwd, cmd string) (string, error) {
 			continue
 		}
 		if err := exec.Command(path, c.args(cwd, cmd)...).Start(); err == nil {
-			return c.bin, nil
+			return c.bin, nil, nil
 		}
 	}
-	return "", fmt.Errorf("no usable terminal emulator")
+	return "", nil, fmt.Errorf("no usable terminal emulator")
 }

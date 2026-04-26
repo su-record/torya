@@ -19,10 +19,33 @@ type silentSpawner struct{}
 
 func Silent() Spawner { return silentSpawner{} }
 
-func (silentSpawner) Run(cwd, cmd string) (string, error) {
+func (silentSpawner) Run(cwd, cmd string) (string, <-chan int, error) {
+	c, null, err := startSilent(cwd, cmd)
+	if err != nil {
+		return "", nil, err
+	}
+	done := make(chan int, 1)
+	go func() {
+		defer close(done)
+		defer null.Close()
+		err := c.Wait()
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				done <- exitErr.ExitCode()
+				return
+			}
+			done <- -1
+			return
+		}
+		done <- c.ProcessState.ExitCode()
+	}()
+	return "silent", done, nil
+}
+
+func startSilent(cwd, cmd string) (*exec.Cmd, *os.File, error) {
 	null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
-		return "", err
+		return nil, nil, err
 	}
 	c := exec.Command("/bin/sh", "-c", cmd)
 	c.Dir = cwd
@@ -32,11 +55,7 @@ func (silentSpawner) Run(cwd, cmd string) (string, error) {
 	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := c.Start(); err != nil {
 		_ = null.Close()
-		return "", err
+		return nil, nil, err
 	}
-	go func() {
-		_ = c.Wait()
-		_ = null.Close()
-	}()
-	return "silent", nil
+	return c, null, nil
 }

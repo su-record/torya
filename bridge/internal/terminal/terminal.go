@@ -4,8 +4,11 @@ package terminal
 
 type Spawner interface {
 	// Run opens a terminal at cwd and starts cmd (already a single shell-line).
-	// Returns the resolved channel name (e.g. "iterm", "wt", "gnome-terminal").
-	Run(cwd, cmd string) (string, error)
+	// Returns the resolved channel name (e.g. "iterm", "wt", "gnome-terminal")
+	// and an optional `done` channel that emits the exit code when the agent
+	// finishes. A nil `done` means the OS surface can't surface completion
+	// to us (legacy linux/windows path).
+	Run(cwd, cmd string) (channel string, done <-chan int, err error)
 }
 
 // System returns the OS-specific spawner (defined per-build-tag in *_<os>.go).
