@@ -51,4 +51,48 @@
       ts: Date.now(),
     });
   });
+
+  // Wrap window.fetch so 4xx/5xx responses are surfaced even when a service
+  // worker (MSW, custom SW) provides them synthetically — chrome.webRequest
+  // doesn't see those.
+  const origFetch = window.fetch;
+  if (typeof origFetch === 'function') {
+    window.fetch = function (input, init) {
+      const method =
+        (init && init.method) ||
+        (input && typeof input === 'object' && input.method) ||
+        'GET';
+      const url =
+        typeof input === 'string'
+          ? input
+          : input && input.url
+            ? input.url
+            : String(input);
+      return origFetch.apply(this, arguments).then(
+        (res) => {
+          if (res && !res.ok) {
+            post({
+              kind: 'fetch',
+              method: String(method).toUpperCase(),
+              url,
+              status: res.status,
+              ts: Date.now(),
+            });
+          }
+          return res;
+        },
+        (err) => {
+          // Network failure (DNS, refused, SW threw without respondWith, etc.)
+          post({
+            kind: 'fetch',
+            method: String(method).toUpperCase(),
+            url,
+            status: 0,
+            ts: Date.now(),
+          });
+          throw err;
+        },
+      );
+    };
+  }
 })();

@@ -1,12 +1,36 @@
 /// <reference types="chrome" />
-import type { ConsoleErrorPayload, DomErrorPayload, ExtMsg } from '@/types';
+import type {
+  ConsoleErrorPayload,
+  DomErrorPayload,
+  ExtMsg,
+  NetworkErrorPayload,
+} from '@/types';
+
+// `chrome.runtime` is gone after the extension is reloaded but pages still
+// hold the old content script. Touching it then throws synchronously, which
+// would otherwise surface as "Uncaught Error: Extension context invalidated"
+// in the page console.
+function safeSend(msg: ExtMsg): void {
+  try {
+    const p = chrome.runtime?.sendMessage(msg);
+    if (p && typeof (p as Promise<unknown>).catch === 'function') {
+      (p as Promise<unknown>).catch(() => undefined);
+    }
+  } catch {
+    /* extension context invalidated — silently drop */
+  }
+}
 
 // Inject page-world script for accurate window error capture.
-const inject = document.createElement('script');
-inject.src = chrome.runtime.getURL('src/content/inject.js');
-inject.async = false;
-(document.head || document.documentElement).appendChild(inject);
-inject.onload = () => inject.remove();
+try {
+  const inject = document.createElement('script');
+  inject.src = chrome.runtime.getURL('src/content/inject.js');
+  inject.async = false;
+  (document.head || document.documentElement).appendChild(inject);
+  inject.onload = () => inject.remove();
+} catch {
+  /* extension context invalidated at injection time */
+}
 
 // Bridge between page world (via window message) and extension service worker.
 window.addEventListener('message', (ev) => {
@@ -27,6 +51,16 @@ window.addEventListener('message', (ev) => {
       ts: Number(t.ts ?? Date.now()),
     };
     msg = { type: 'capture/dom', payload };
+  } else if (t.kind === 'fetch') {
+    const payload: NetworkErrorPayload = {
+      method: String(t.method ?? 'GET'),
+      url: String(t.url ?? ''),
+      status: Number(t.status ?? 0),
+      origin,
+      pageUrl: url,
+      ts: Number(t.ts ?? Date.now()),
+    };
+    msg = { type: 'capture/network', payload };
   } else {
     const payload: ConsoleErrorPayload = {
       kind: (t.kind as 'error' | 'rejection') ?? 'error',
@@ -41,5 +75,5 @@ window.addEventListener('message', (ev) => {
     };
     msg = { type: 'capture/console', payload };
   }
-  chrome.runtime.sendMessage(msg).catch(() => undefined);
+  safeSend(msg);
 });
