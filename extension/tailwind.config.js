@@ -5,14 +5,14 @@ export default {
     extend: {
       colors: {
         torya: {
-          bg: '#0a0b0e',
-          surface: '#14161a',
-          'surface-2': '#1a1d22',
-          border: '#232830',
-          'border-strong': '#2e343d',
+          bg: '#11141a',           // soft blue-charcoal
+          surface: '#1a1d25',
+          'surface-2': '#232730',
+          border: '#2a2f3a',
+          'border-strong': '#363c48',
           text: '#e8eaed',
-          muted: '#888d96',
-          'muted-2': '#5f6571',
+          muted: '#8d93a1',
+          'muted-2': '#5f6573',
           accent: '#7c7da9',         // muted slate-indigo
           'accent-strong': '#9a9bd1',
           success: '#6bb78f',

@@ -116,7 +116,8 @@ export type ExtMsg =
   | { type: 'bridge/pick-folder'; title?: string }
   | { type: 'bridge/detect-project'; origin: string }
   | { type: 'workspace/upsert'; workspace: Workspace }
-  | { type: 'agents/redetect' };
+  | { type: 'agents/redetect' }
+  | { type: 'errors/clear' };
 
 export interface DetectedProject {
   port: number;

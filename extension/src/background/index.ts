@@ -45,6 +45,17 @@ chrome.runtime.onStartup.addListener(() => {
 
 void tryConnectBridge();
 
+// Prune any pre-filter entries that snuck in before the localhost-only
+// guard. Runs once on startup.
+void (async () => {
+  const s = await load();
+  const filtered = s.errors.filter((e) => isLocalhost(e.origin));
+  if (filtered.length !== s.errors.length) {
+    await patch({ errors: filtered });
+    log('pruned', s.errors.length - filtered.length, 'non-localhost entries');
+  }
+})();
+
 async function tryConnectBridge(): Promise<void> {
   if (bridge.connect()) {
     try {
@@ -103,6 +114,9 @@ async function handleMessage(msg: ExtMsg): Promise<unknown> {
       const agents = await bridge.send<AgentInfo[]>('detect-agents');
       await setAgents(agents);
       return agents;
+    case 'errors/clear':
+      await patch({ errors: [] });
+      return { ok: true };
     default:
       return { ok: false };
   }
@@ -126,7 +140,14 @@ function shouldSkipDuplicate(sig: string): boolean {
   return false;
 }
 
+// Torya is for local development. Drop errors from production sites so the
+// live log doesn't fill with noise from regular browsing.
+function isLocalhost(origin: string): boolean {
+  return /^https?:\/\/(localhost|127\.0\.0\.1|\[?::1]?|0\.0\.0\.0)(:|\/|$)/i.test(origin);
+}
+
 async function ingestConsole(p: ConsoleErrorPayload): Promise<DevError | null> {
+  if (!isLocalhost(p.origin)) return null;
   let s = await load();
   // Honor capture rules
   if (p.kind === 'rejection' && !s.settings.captureRules.rejection) return null;
@@ -158,6 +179,7 @@ async function ingestConsole(p: ConsoleErrorPayload): Promise<DevError | null> {
 }
 
 async function ingestNetwork(p: NetworkErrorPayload): Promise<DevError | null> {
+  if (!isLocalhost(p.origin)) return null;
   let s = await load();
   if (!s.settings.captureRules.network) return null;
 

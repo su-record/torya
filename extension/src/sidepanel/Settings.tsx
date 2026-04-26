@@ -268,31 +268,19 @@ function AgentPicker({ state }: { state: StorageSchema }) {
         </button>
       </div>
 
-      <div className="rounded border border-torya-border bg-torya-surface px-3 py-2">
-        {currentAvailable ? (
-          <div className="flex items-center justify-between text-torya-muted">
-            <span className="text-torya-success">✅ available</span>
-            <span className="truncate text-[11px]">
-              {currentInfo?.version ?? currentInfo?.path ?? ''}
-            </span>
-          </div>
-        ) : (
-          <div className="space-y-1.5">
-            <div className="text-torya-warn">⚠ {current} is not installed.</div>
-            <div className="text-[11px] text-torya-muted">
-              Install instructions:{' '}
-              <a
-                className="text-torya-accent-strong hover:underline"
-                href={installLink(current)}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                {installLink(current)}
-              </a>
-            </div>
-          </div>
-        )}
-      </div>
+      {!currentAvailable && (
+        <div className="rounded border border-torya-warn/40 bg-torya-warn-bg/30 px-3 py-2">
+          <div className="text-torya-warn">⚠ {current} is not installed.</div>
+          <a
+            className="text-[11px] text-torya-accent-strong hover:underline"
+            href={installLink(current)}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Install instructions →
+          </a>
+        </div>
+      )}
 
       <div className="mt-2 flex items-center gap-3">
         <span className="text-torya-muted">Terminal:</span>
