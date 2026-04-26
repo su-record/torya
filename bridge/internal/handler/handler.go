@@ -176,6 +176,21 @@ func (h *Handler) runAgent(req proto.Request) {
 			// and report via=cmux-fallback in progress messages.
 			via = "cmux-fallback"
 		}
+	case "silent":
+		_ = h.w.Write(proto.Progress(req.ID, map[string]string{
+			"stage": "spawn",
+			"via":   "silent",
+		}))
+		ch, err := terminal.Silent().Run(a.Cwd, cmdLine)
+		if err != nil {
+			_ = h.w.Write(proto.Err(req.ID, "spawn_failed", err.Error()))
+			return
+		}
+		_ = h.w.Write(proto.Progress(req.ID, map[string]string{
+			"stage":   "started",
+			"channel": ch,
+		}))
+		via = "silent"
 	}
 
 	if via == "" || via == "cmux-fallback" {
@@ -201,7 +216,9 @@ func buildCommand(agent, prompt string) string {
 	q := shellEscape(prompt)
 	switch agent {
 	case "claude":
-		return "claude -p " + q
+		// acceptEdits lets Torya-launched runs apply file edits without a
+		// human-in-the-loop prompt (which `-p` mode can't surface anyway).
+		return "claude --permission-mode acceptEdits -p " + q
 	case "codex":
 		return "codex exec " + q
 	case "gemini":
