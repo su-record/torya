@@ -11,6 +11,11 @@ import {
 } from '@/lib/storage';
 import { isLocalhost } from '@/lib/origin';
 import { uuid } from '@/lib/uuid';
+import {
+  setCdpEnabled,
+  setExceptionListener,
+  wireCdpTabListeners,
+} from './cdp';
 import type {
   AgentInfo,
   AgentName,
@@ -65,6 +70,40 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 void tryConnectBridge();
+
+// CDP-based capture of service-worker exceptions. Off by default; the user
+// opts in via Settings (settings.captureServiceWorkerErrors).
+wireCdpTabListeners();
+setExceptionListener((e) => {
+  if (!isLocalhost(e.origin)) return;
+  void ingestConsole({
+    kind: 'error',
+    message:
+      e.source === 'service_worker'
+        ? `[sw] ${e.message}`
+        : e.source === 'worker'
+          ? `[worker] ${e.message}`
+          : e.message,
+    filename: e.filename,
+    lineno: e.lineno,
+    colno: e.colno,
+    stack: e.stack,
+    origin: e.origin,
+    url: e.url,
+    ts: e.ts,
+  });
+});
+void (async () => {
+  const s = await load();
+  await setCdpEnabled(!!s.settings.captureServiceWorkerErrors);
+})();
+chrome.storage.onChanged.addListener(async (changes, area) => {
+  if (area !== 'local' || !changes.settings) return;
+  const next = changes.settings.newValue as
+    | { captureServiceWorkerErrors?: boolean }
+    | undefined;
+  await setCdpEnabled(!!next?.captureServiceWorkerErrors);
+});
 
 // Prune any pre-filter entries that snuck in before the localhost-only
 // guard. Runs once on startup.

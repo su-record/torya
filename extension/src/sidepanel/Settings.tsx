@@ -51,6 +51,10 @@ export function Settings({ state, onBack }: Props) {
         <Section title="Capture rules">
           <CapturePanel state={state} />
         </Section>
+
+        <Section title="Service worker errors (experimental)">
+          <SwCapturePanel state={state} />
+        </Section>
       </main>
     </div>
   );
@@ -515,6 +519,41 @@ const CAPTURE_LABELS: Record<keyof StorageSchema['settings']['captureRules'], st
   network: 'Network 4xx/5xx',
   dom: 'DOM resource load failures (img/script/link)',
 };
+
+function SwCapturePanel({ state }: { state: StorageSchema }) {
+  const on = !!state.settings.captureServiceWorkerErrors;
+  return (
+    <div>
+      <label className="flex cursor-pointer items-start gap-2 rounded border border-transparent px-2 py-1.5 hover:border-torya-border">
+        <input
+          type="checkbox"
+          className="mt-0.5 accent-torya-accent"
+          checked={on}
+          onChange={(e) =>
+            void patch({
+              settings: {
+                ...state.settings,
+                captureServiceWorkerErrors: e.target.checked,
+              },
+            })
+          }
+        />
+        <span className="flex-1">
+          <span className="block text-torya-text">
+            Attach Chrome debugger to localhost tabs
+          </span>
+          <span className="mt-0.5 block text-torya-muted-2">
+            Required to catch errors thrown inside service workers (e.g. MSW).
+            Shows a yellow{' '}
+            <span className="text-torya-text">"Torya is debugging"</span> banner
+            on each attached tab and prevents DevTools from attaching at the
+            same time.
+          </span>
+        </span>
+      </label>
+    </div>
+  );
+}
 
 function CapturePanel({ state }: { state: StorageSchema }) {
   const rules = state.settings.captureRules;

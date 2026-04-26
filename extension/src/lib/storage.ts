@@ -12,6 +12,7 @@ const DEFAULTS: StorageSchema = {
     autoDirectMode: false,
     captureRules: { console: true, rejection: true, network: true, dom: true },
     ignoreOrigins: [],
+    captureServiceWorkerErrors: false,
   },
   directMode: { active: null, keys: {} },
   errors: [],

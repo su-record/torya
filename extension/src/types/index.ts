@@ -74,6 +74,11 @@ export interface Settings {
   autoDirectMode: boolean;
   captureRules: CaptureRules;
   ignoreOrigins: string[];
+  // Opt-in: attach via chrome.debugger to capture errors that fire inside
+  // service worker contexts (MSW, custom SWs). Costs a yellow "Torya is
+  // debugging" banner on the tab and blocks DevTools from attaching at the
+  // same time, so it's off by default.
+  captureServiceWorkerErrors?: boolean;
 }
 
 export interface OnboardingState {
