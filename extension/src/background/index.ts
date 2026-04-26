@@ -236,7 +236,11 @@ function signatureForError(e: DevError): string {
 // trust it. We reopen the dedup window for that error's signature and watch
 // for recurrence. If the same error fires again before VERIFY_WINDOW_MS,
 // the fix didn't take — demote to 'failed'. Otherwise mark 'fixed'.
-const VERIFY_WINDOW_MS = 8_000;
+//
+// Combined with the ~600ms autoReload settle and a typical Vite reload of
+// a few hundred ms, this gives the freshly-loaded page roughly 2.5s of
+// real airtime to either reproduce the bug or stay quiet.
+const VERIFY_WINDOW_MS = 3_500;
 const verifying = new Map<
   string,
   { errorId: string; signature: string; workspaceId?: string; timer: number }
@@ -254,6 +258,7 @@ function clearVerification(errorId: string): void {
 async function noteRecurrenceIfVerifying(sig: string): Promise<void> {
   for (const [errorId, v] of verifying) {
     if (v.signature !== sig) continue;
+    log('verify recurrence:', sig, '→ demoting', errorId, 'to failed');
     clearVerification(errorId);
     const cur = (await load()).errors.find((e) => e.id === errorId);
     await updateError(errorId, {
@@ -267,32 +272,49 @@ async function noteRecurrenceIfVerifying(sig: string): Promise<void> {
 async function shouldAutoRunAgent(workspaceId: string): Promise<boolean> {
   const now = Date.now();
   const last = lastAgentRunAt.get(workspaceId);
-  if (last !== undefined && now - last < AGENT_COOLDOWN_MS) return false;
-  // Also skip if any error is currently 'running' for this workspace —
-  // avoids spawning a parallel terminal while the previous agent is working.
+  if (last !== undefined && now - last < AGENT_COOLDOWN_MS) {
+    log('shouldAutoRunAgent: cooldown', Math.round((now - last) / 1000), 's <', AGENT_COOLDOWN_MS / 1000, 's');
+    return false;
+  }
   const s = await load();
   const inflight = s.errors.some(
     (e) => e.workspaceId === workspaceId && e.status === 'running',
   );
-  if (inflight) return false;
+  if (inflight) {
+    log('shouldAutoRunAgent: skip, another run is in-flight');
+    return false;
+  }
   lastAgentRunAt.set(workspaceId, now);
   return true;
 }
 
 async function ingestConsole(p: ConsoleErrorPayload): Promise<DevError | null> {
-  if (!isLocalhost(p.origin)) return null;
+  log('ingestConsole:', p.kind, p.origin, p.message.slice(0, 80));
+  if (!isLocalhost(p.origin)) {
+    log('  ↳ skip: not localhost');
+    return null;
+  }
   let s = await load();
-  // Honor capture rules
-  if (p.kind === 'rejection' && !s.settings.captureRules.rejection) return null;
-  if (p.kind !== 'rejection' && !s.settings.captureRules.console) return null;
+  if (p.kind === 'rejection' && !s.settings.captureRules.rejection) {
+    log('  ↳ skip: rejection rule off');
+    return null;
+  }
+  if (p.kind !== 'rejection' && !s.settings.captureRules.console) {
+    log('  ↳ skip: console rule off');
+    return null;
+  }
 
   const sig = `c:${p.message}|${p.filename ?? ''}:${p.lineno ?? 0}`;
   await noteRecurrenceIfVerifying(sig);
-  if (shouldSkipDuplicate(sig)) return null;
+  if (shouldSkipDuplicate(sig)) {
+    log('  ↳ skip: dedup hit', sig);
+    return null;
+  }
 
   let ws = findWorkspaceForOrigin(s.workspaces, p.origin);
   if (!ws) ws = await tryAutoMap(p.origin);
-  if (ws) s = await load(); // refresh to include the new workspace
+  if (ws) s = await load();
+  log('  ↳ workspace:', ws ? `${ws.name} (${ws.id})` : 'unmapped');
 
   const e: DevError = {
     id: uuid(),
@@ -308,24 +330,40 @@ async function ingestConsole(p: ConsoleErrorPayload): Promise<DevError | null> {
     status: 'new',
   };
   await pushError(e);
+  log('  ↳ pushed error', e.id);
   if (ws && (await shouldAutoRunAgent(ws.id))) {
+    log('  ↳ auto-run agent', s.settings.defaultAgent, 'for', e.id);
     void runAgentForError(e.id, s.settings.defaultAgent);
+  } else {
+    log('  ↳ no auto-run (ws=', !!ws, 'gated by cooldown/in-flight)');
   }
   return e;
 }
 
 async function ingestNetwork(p: NetworkErrorPayload): Promise<DevError | null> {
-  if (!isLocalhost(p.origin)) return null;
+  log('ingestNetwork:', p.method, p.url, '→', p.status, 'on', p.origin);
+  if (!isLocalhost(p.origin)) {
+    log('  ↳ skip: not localhost');
+    return null;
+  }
   let s = await load();
-  if (!s.settings.captureRules.network) return null;
+  if (!s.settings.captureRules.network) {
+    log('  ↳ skip: network rule off');
+    return null;
+  }
 
   const sig = `n:${p.method}:${p.url}:${p.status}`;
   await noteRecurrenceIfVerifying(sig);
-  if (shouldSkipDuplicate(sig, NETWORK_DEDUP_WINDOW_MS)) return null;
+  if (shouldSkipDuplicate(sig, NETWORK_DEDUP_WINDOW_MS)) {
+    log('  ↳ skip: dedup hit', sig);
+    return null;
+  }
 
   let ws = findWorkspaceForOrigin(s.workspaces, p.origin);
   if (!ws) ws = await tryAutoMap(p.origin);
   if (ws) s = await load();
+  log('  ↳ workspace:', ws ? `${ws.name} (${ws.id})` : 'unmapped');
+
   const e: DevError = {
     id: uuid(),
     capturedAt: p.ts,
@@ -339,8 +377,12 @@ async function ingestNetwork(p: NetworkErrorPayload): Promise<DevError | null> {
     status: 'new',
   };
   await pushError(e);
+  log('  ↳ pushed error', e.id);
   if (ws && p.status >= 500 && (await shouldAutoRunAgent(ws.id))) {
+    log('  ↳ auto-run agent', s.settings.defaultAgent, 'for', e.id);
     void runAgentForError(e.id, s.settings.defaultAgent);
+  } else {
+    log('  ↳ no auto-run (status=', p.status, 'ws=', !!ws, 'gated)');
   }
   return e;
 }
@@ -417,23 +459,24 @@ async function tryAutoMap(origin: string): Promise<Workspace | undefined> {
 async function runAgentForError(id: string, agent: AgentName): Promise<{ ok: boolean }> {
   const s = await load();
   const err = s.errors.find((e) => e.id === id);
-  if (!err) return { ok: false };
+  if (!err) {
+    log('runAgentForError: error', id, 'gone');
+    return { ok: false };
+  }
   const ws = err.workspaceId ? s.workspaces.find((w) => w.id === err.workspaceId) : undefined;
   if (!ws) {
-    log('no workspace mapping for', err.origin);
+    log('runAgentForError: no workspace mapping for', err.origin);
     return { ok: false };
   }
   const prompt = buildPrompt(err);
   let via = s.settings.terminalPreference as 'cmux' | 'system' | 'silent';
-  // Silent runs leave no UI trace. If the user isn't looking at the side
-  // panel, they'd have no way to know an agent is running — promote to the
-  // system terminal so something visible happens.
   if (via === 'silent' && openSidePanels === 0) {
+    log('runAgentForError: silent + panel closed → promote to system');
     via = 'system';
   }
-  // Default tracked from the chosen mode; bridge will confirm with a
-  // started-progress message including the real `tracked` flag.
   let tracked = via === 'silent';
+  log('runAgentForError:', id, '→', agent, 'via', via, '@', ws.rootPath);
+  log('  prompt preview:', prompt.split('\n').slice(0, 6).join(' | '));
   await updateError(id, {
     status: 'running',
     run: {
@@ -445,7 +488,7 @@ async function runAgentForError(id: string, agent: AgentName): Promise<{ ok: boo
     },
   });
   const onMsg = (m: BridgeResponse) => {
-    log('agent:', m.kind, m.data);
+    log('  bridge:', m.kind, m.data);
     if (m.kind !== 'progress') return;
     const d = m.data as
       | { stage?: string; tracked?: boolean; via?: string; channel?: string }
@@ -480,28 +523,31 @@ async function runAgentForError(id: string, agent: AgentName): Promise<{ ok: boo
       onMsg
     );
     const final = await done;
+    log('  bridge final:', final.kind, final.data, '(tracked=' + tracked + ')');
     const cur = (await load()).errors.find((e) => e.id === id);
     if (final.kind !== 'exit') {
+      log('  → status: failed (non-exit)');
       await updateError(id, {
         status: 'failed',
         run: cur?.run ? { ...cur.run, endedAt: Date.now(), result: 'failed' } : undefined,
       });
+      lastAgentRunAt.delete(ws.id);
       return { ok: false };
     }
     if (!tracked) {
-      // Untracked: agent run was handed off to a user-visible terminal.
-      // We don't know if it succeeded — surface "opened in <terminal>"
-      // and let the user judge.
+      log('  → status: dispatched (untracked terminal)');
       await updateError(id, {
         status: 'dispatched',
         run: cur?.run
           ? { ...cur.run, tracked: false, endedAt: Date.now(), result: 'dispatched' }
           : undefined,
       });
+      lastAgentRunAt.delete(ws.id);
       return { ok: true };
     }
     const code = (final.data as { code?: number } | undefined)?.code ?? 0;
     if (code !== 0) {
+      log('  → status: failed (exit code', code, ')');
       await updateError(id, {
         status: 'failed',
         run: cur?.run
@@ -511,27 +557,27 @@ async function runAgentForError(id: string, agent: AgentName): Promise<{ ok: boo
       lastAgentRunAt.delete(ws.id);
       return { ok: false };
     }
-    // Success: don't trust the exit code alone. Reopen capture for this
-    // signature and watch — if the same error fires again within
-    // VERIFY_WINDOW_MS the fix didn't take, otherwise mark fixed.
     const sig = signatureForError(err);
     recentSignatures.delete(sig);
+    log('  → status: verifying for', VERIFY_WINDOW_MS, 'ms (sig:', sig, ')');
     await updateError(id, {
       status: 'verifying',
       run: cur?.run
         ? { ...cur.run, tracked: true, endedAt: Date.now(), result: 'verifying' }
         : undefined,
     });
-    // Reload matching tabs so the verification watch sees requests from
-    // the freshly-loaded page (catches HMR-missed-the-update cases).
     if (s.settings.autoReloadOnFix !== false) {
+      log('  → autoReload: scheduling tab reload at', err.origin);
       void reloadOriginTabs(err.origin);
+    } else {
+      log('  → autoReload: disabled by setting');
     }
     const timer = setTimeout(() => {
       verifying.delete(id);
       void (async () => {
         const latest = (await load()).errors.find((e) => e.id === id);
         if (!latest || latest.status !== 'verifying') return;
+        log('verifying timer fired:', id, '→ fixed (no recurrence in window)');
         await updateError(id, {
           status: 'fixed',
           run: latest.run ? { ...latest.run, result: 'fixed' } : undefined,
@@ -556,18 +602,31 @@ async function runAgentForError(id: string, agent: AgentName): Promise<{ ok: boo
 }
 
 async function reloadOriginTabs(origin: string): Promise<void> {
+  // Small settle delay: claude has just finished writing; the dev server's
+  // file watcher (chokidar etc.) needs a beat to register the change before
+  // we ask the browser for a fresh module. Without this we sometimes reload
+  // the tab fast enough that the page re-imports the still-stale build.
+  await new Promise((r) => setTimeout(r, 600));
   try {
     const tabs = await chrome.tabs.query({});
+    const matching: number[] = [];
     for (const t of tabs) {
       if (t.id === undefined || !t.url) continue;
       try {
-        if (new URL(t.url).origin === origin) {
-          await chrome.tabs.reload(t.id, { bypassCache: false });
-        }
+        if (new URL(t.url).origin === origin) matching.push(t.id);
       } catch {
-        /* ignore non-http URLs */
+        /* non-http URL */
       }
     }
+    log('autoReload: reloading', matching.length, 'tabs at', origin);
+    await Promise.all(
+      // bypassCache=true so the page isn't served a stale bundle from the
+      // HTTP cache, and the in-page service worker (e.g. MSW) is forced
+      // through a fresh handshake instead of replaying memoized responses.
+      matching.map((id) =>
+        chrome.tabs.reload(id, { bypassCache: true }).catch(() => undefined),
+      ),
+    );
   } catch (e) {
     log('reloadOriginTabs failed', e);
   }
@@ -579,11 +638,39 @@ async function quickFixError(_id: string): Promise<{ ok: boolean }> {
 }
 
 function buildPrompt(e: DevError): string {
-  const where = e.meta.file ? ` at ${e.meta.file}${e.meta.line ? `:${e.meta.line}` : ''}` : '';
+  const lines: string[] = [
+    'A user is debugging this project in the browser. The runtime error',
+    'below was just captured. Modify the source code in this repository',
+    'to make it stop. Do not ask for clarification — pick the most likely',
+    'cause from the stack/location, edit the relevant file, and exit.',
+    '',
+    'Skip only if the error is clearly an intentional simulation that the',
+    'project deliberately produces (e.g. a randomized failure rate gated by',
+    'a constant named like ERROR_PROBABILITY). Real bugs that masquerade',
+    'as such (typos, ReferenceError, missing fields) must still be fixed.',
+    '',
+    '--- captured error ---',
+  ];
   if (e.source === 'network' && e.meta.request) {
-    return `Fix this network error: ${e.message}. Find the relevant handler and address the failure.`;
+    const r = e.meta.request;
+    lines.push(
+      `${r.method} ${r.url} → ${r.status}`,
+      `page: ${e.url}`,
+      'Find the request handler (look in src/mocks, server routes, or',
+      'whatever serves this URL in dev) and fix what is making it 5xx.',
+    );
+  } else {
+    lines.push(e.message);
+    if (e.meta.file) {
+      lines.push(
+        `at ${e.meta.file}${e.meta.line ? `:${e.meta.line}` : ''}${e.meta.col ? `:${e.meta.col}` : ''}`,
+      );
+    }
+    if (e.stack) {
+      lines.push('', 'stack:', e.stack);
+    }
   }
-  return `Fix this browser error from local development:\n\n${e.message}${where}\n\n${e.stack ?? ''}`;
+  return lines.join('\n');
 }
 
 // ---------- Network capture ----------
