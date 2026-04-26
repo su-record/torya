@@ -1,0 +1,19 @@
+{
+  "name": "torya",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser to terminal: catch errors and let your coding agent fix them.",
+  "repository": "https://github.com/su-record/torya",
+  "license": "MIT",
+  "packageManager": "pnpm@10.13.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev:ext": "pnpm --filter torya-extension dev",
+    "build:ext": "pnpm --filter torya-extension build",
+    "dev:bridge": "make -C bridge dev",
+    "build:bridge": "make -C bridge build",
+    "release:bridge": "make -C bridge release"
+  }
+}

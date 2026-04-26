@@ -1,0 +1,268 @@
+// Package handler dispatches Native Messaging requests to per-command handlers.
+package handler
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"runtime"
+	"time"
+
+	"github.com/su-record/torya/bridge/internal/agents"
+	"github.com/su-record/torya/bridge/internal/log"
+	"github.com/su-record/torya/bridge/internal/nm"
+	"github.com/su-record/torya/bridge/internal/proto"
+	"github.com/su-record/torya/bridge/internal/safefs"
+	"github.com/su-record/torya/bridge/internal/terminal"
+)
+
+const Version = "0.1.0"
+
+type Handler struct {
+	w     *nm.Writer
+	guard *safefs.Guard
+}
+
+func New(w *nm.Writer) *Handler {
+	return &Handler{w: w, guard: safefs.New()}
+}
+
+func (h *Handler) Dispatch(req proto.Request) {
+	switch req.Cmd {
+	case "ping":
+		h.ping(req)
+	case "detect-agents":
+		h.detectAgents(req)
+	case "set-workspaces":
+		h.setWorkspaces(req)
+	case "run-agent":
+		h.runAgent(req)
+	case "open-terminal":
+		h.openTerminal(req)
+	case "pick-folder":
+		h.pickFolder(req)
+	case "read-file":
+		h.readFile(req)
+	case "write-file":
+		h.writeFile(req)
+	default:
+		_ = h.w.Write(proto.Err(req.ID, "unknown_cmd", "unknown command: "+req.Cmd))
+	}
+}
+
+func (h *Handler) ping(req proto.Request) {
+	_ = h.w.Write(proto.OK(req.ID, map[string]string{
+		"version": Version,
+		"os":      runtime.GOOS,
+		"arch":    runtime.GOARCH,
+	}))
+}
+
+func (h *Handler) detectAgents(req proto.Request) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	infos := agents.DetectAll(ctx)
+	_ = h.w.Write(proto.OK(req.ID, infos))
+}
+
+type setWorkspacesArgs struct {
+	Workspaces []struct {
+		ID       string `json:"id"`
+		RootPath string `json:"rootPath"`
+	} `json:"workspaces"`
+}
+
+func (h *Handler) setWorkspaces(req proto.Request) {
+	var a setWorkspacesArgs
+	if err := json.Unmarshal(req.Args, &a); err != nil {
+		_ = h.w.Write(proto.Err(req.ID, "bad_args", err.Error()))
+		return
+	}
+	roots := make([]string, 0, len(a.Workspaces))
+	for _, w := range a.Workspaces {
+		if w.RootPath != "" {
+			roots = append(roots, w.RootPath)
+		}
+	}
+	h.guard.SetRoots(roots)
+	log.Infof("workspace roots updated: %d", len(roots))
+	_ = h.w.Write(proto.OK(req.ID, map[string]int{"count": len(roots)}))
+}
+
+type runAgentArgs struct {
+	Agent    string `json:"agent"`
+	Prompt   string `json:"prompt"`
+	Cwd      string `json:"cwd"`
+	Terminal string `json:"terminal"` // "cmux" | "system" | "auto"
+}
+
+func (h *Handler) runAgent(req proto.Request) {
+	var a runAgentArgs
+	if err := json.Unmarshal(req.Args, &a); err != nil {
+		_ = h.w.Write(proto.Err(req.ID, "bad_args", err.Error()))
+		return
+	}
+	if err := h.guard.Check(a.Cwd); err != nil {
+		_ = h.w.Write(proto.Err(req.ID, "cwd_not_allowed", err.Error()))
+		return
+	}
+
+	start := time.Now()
+	cmdLine := buildCommand(a.Agent, a.Prompt)
+	via := ""
+
+	switch a.Terminal {
+	case "cmux":
+		if terminal.CmuxAvailable() {
+			via = "cmux"
+			// TODO(phase-6): real cmux RPC. For now fall through to system terminal
+			// and report via=cmux-fallback in progress messages.
+			via = "cmux-fallback"
+		}
+	}
+
+	if via == "" || via == "cmux-fallback" {
+		_ = h.w.Write(proto.Progress(req.ID, map[string]string{
+			"stage": "spawn",
+			"via":   "system",
+		}))
+		ch, err := terminal.System().Run(a.Cwd, cmdLine)
+		if err != nil {
+			_ = h.w.Write(proto.Err(req.ID, "spawn_failed", err.Error()))
+			return
+		}
+		_ = h.w.Write(proto.Progress(req.ID, map[string]string{
+			"stage":   "started",
+			"channel": ch,
+		}))
+	}
+
+	_ = h.w.Write(proto.Exit(req.ID, 0, time.Since(start).Milliseconds()))
+}
+
+func buildCommand(agent, prompt string) string {
+	q := shellEscape(prompt)
+	switch agent {
+	case "claude":
+		return "claude -p " + q
+	case "codex":
+		return "codex exec " + q
+	case "gemini":
+		return "gemini -p " + q
+	default:
+		return agent + " " + q
+	}
+}
+
+// shellEscape produces a single-quoted bash-safe string. Sufficient for *nix;
+// Windows wt.exe / cmd /K command line is emitted differently in spawner.
+func shellEscape(s string) string {
+	out := "'"
+	for _, r := range s {
+		if r == '\'' {
+			out += `'"'"'`
+		} else {
+			out += string(r)
+		}
+	}
+	out += "'"
+	return out
+}
+
+type openTerminalArgs struct {
+	Cwd      string `json:"cwd"`
+	Terminal string `json:"terminal"`
+}
+
+func (h *Handler) openTerminal(req proto.Request) {
+	var a openTerminalArgs
+	if err := json.Unmarshal(req.Args, &a); err != nil {
+		_ = h.w.Write(proto.Err(req.ID, "bad_args", err.Error()))
+		return
+	}
+	if err := h.guard.Check(a.Cwd); err != nil {
+		_ = h.w.Write(proto.Err(req.ID, "cwd_not_allowed", err.Error()))
+		return
+	}
+	ch, err := terminal.System().Run(a.Cwd, "echo Torya bridge — workspace ready")
+	if err != nil {
+		_ = h.w.Write(proto.Err(req.ID, "spawn_failed", err.Error()))
+		return
+	}
+	_ = h.w.Write(proto.OK(req.ID, map[string]string{"via": ch}))
+}
+
+type pickFolderArgs struct {
+	Title string `json:"title"`
+}
+
+func (h *Handler) pickFolder(req proto.Request) {
+	var a pickFolderArgs
+	_ = json.Unmarshal(req.Args, &a)
+	path, err := pickFolderOS(a.Title)
+	if err != nil {
+		_ = h.w.Write(proto.Err(req.ID, "pick_failed", err.Error()))
+		return
+	}
+	_ = h.w.Write(proto.OK(req.ID, map[string]string{"path": path}))
+}
+
+type readFileArgs struct {
+	Path     string `json:"path"`
+	MaxBytes int    `json:"maxBytes"`
+}
+
+func (h *Handler) readFile(req proto.Request) {
+	var a readFileArgs
+	if err := json.Unmarshal(req.Args, &a); err != nil {
+		_ = h.w.Write(proto.Err(req.ID, "bad_args", err.Error()))
+		return
+	}
+	if err := h.guard.Check(a.Path); err != nil {
+		_ = h.w.Write(proto.Err(req.ID, "path_not_allowed", err.Error()))
+		return
+	}
+	content, size, err := readFileLimited(a.Path, a.MaxBytes)
+	if err != nil {
+		_ = h.w.Write(proto.Err(req.ID, "read_failed", err.Error()))
+		return
+	}
+	_ = h.w.Write(proto.OK(req.ID, map[string]any{
+		"content":  content,
+		"encoding": "utf-8",
+		"size":     size,
+	}))
+}
+
+type writeFileArgs struct {
+	Path       string `json:"path"`
+	Content    string `json:"content"`
+	CreateDirs bool   `json:"createDirs"`
+}
+
+func (h *Handler) writeFile(req proto.Request) {
+	var a writeFileArgs
+	if err := json.Unmarshal(req.Args, &a); err != nil {
+		_ = h.w.Write(proto.Err(req.ID, "bad_args", err.Error()))
+		return
+	}
+	if err := h.guard.Check(a.Path); err != nil {
+		_ = h.w.Write(proto.Err(req.ID, "path_not_allowed", err.Error()))
+		return
+	}
+	n, err := writeFileBytes(a.Path, a.Content, a.CreateDirs)
+	if err != nil {
+		_ = h.w.Write(proto.Err(req.ID, "write_failed", err.Error()))
+		return
+	}
+	_ = h.w.Write(proto.OK(req.ID, map[string]int{"bytesWritten": n}))
+}
+
+// pickFolderOS prompts the user. For MVP we implement macOS only; other OS
+// callers receive a clear error and the extension can fall back to manual entry.
+func pickFolderOS(title string) (string, error) {
+	if runtime.GOOS != "darwin" {
+		return "", fmt.Errorf("pick-folder unimplemented on %s", runtime.GOOS)
+	}
+	return pickFolderDarwin(title)
+}
