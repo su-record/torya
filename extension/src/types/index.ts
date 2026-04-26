@@ -106,6 +106,7 @@ export type ExtMsg =
   | { type: 'error/run-agent'; id: string; agent: AgentName }
   | { type: 'error/quick-fix'; id: string }
   | { type: 'bridge/status' }
+  | { type: 'bridge/pick-folder'; title?: string }
   | { type: 'workspace/upsert'; workspace: Workspace }
   | { type: 'agents/redetect' };
 

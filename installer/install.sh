@@ -90,7 +90,7 @@ fi
 
 cat <<EOM
 
-🐢 Torya Bridge installed.
+🐶 Torya Bridge installed.
 
 Next:
   1. Reload the Torya extension in chrome://extensions

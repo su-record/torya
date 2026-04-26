@@ -86,7 +86,7 @@ sidepanel.html
 
 ```
 ┌─────────────────────────────────────────┐
-│  🐢 Torya                          ⚙ ⓘ  │  ← 헤더 (옵션, 정보)
+│  🐶 Torya                          ⚙ ⓘ  │  ← 헤더 (옵션, 정보)
 ├─────────────────────────────────────────┤
 │  📁 Workspace: myapp                    │  ← 현재 매핑 표시
 │  🤖 Agents: claude ✓ codex ✓ cmux ✓     │
@@ -179,7 +179,7 @@ new → dismissed
 
 ```
 ┌─────────────────────────┐
-│  🐢 Torya               │
+│  🐶 Torya               │
 │  📁 myapp              │
 │  Bridge: ✅            │
 │  Live errors: 2        │

@@ -26,11 +26,12 @@ chrome.runtime.onInstalled.addListener(async () => {
   await chrome.sidePanel
     .setPanelBehavior({ openPanelOnActionClick: true })
     .catch(() => undefined);
-  // Fire onboarding side panel on first install.
-  const s = await load();
-  if (!s.onboarding.completed) {
-    // Best effort: cannot programmatically open side panel without user gesture in MV3.
-    log('onboarding pending');
+});
+
+// Fallback: explicit click handler in case openPanelOnActionClick is unset.
+chrome.action.onClicked.addListener(async (tab) => {
+  if (tab.windowId !== undefined) {
+    await chrome.sidePanel.open({ windowId: tab.windowId }).catch(() => undefined);
   }
 });
 
@@ -82,7 +83,11 @@ async function handleMessage(msg: ExtMsg): Promise<unknown> {
     case 'error/quick-fix':
       return await quickFixError(msg.id);
     case 'bridge/status':
+      if (!bridge.isConnected()) await tryConnectBridge();
       return { connected: bridge.isConnected() };
+    case 'bridge/pick-folder':
+      if (!bridge.isConnected()) await tryConnectBridge();
+      return await bridge.send('pick-folder', { title: msg.title ?? 'Select project folder' });
     case 'workspace/upsert':
       // Forward updated workspace list to bridge.
       const s = await load();
@@ -97,7 +102,28 @@ async function handleMessage(msg: ExtMsg): Promise<unknown> {
   }
 }
 
-async function ingestConsole(p: ConsoleErrorPayload): Promise<DevError> {
+// In-memory dedup: signature → last seen ts. Skip if seen within DEDUP_WINDOW.
+const DEDUP_WINDOW_MS = 5_000;
+const recentSignatures = new Map<string, number>();
+
+function shouldSkipDuplicate(sig: string): boolean {
+  const now = Date.now();
+  const prev = recentSignatures.get(sig);
+  if (prev !== undefined && now - prev < DEDUP_WINDOW_MS) return true;
+  recentSignatures.set(sig, now);
+  // Best-effort cleanup.
+  if (recentSignatures.size > 200) {
+    for (const [k, v] of recentSignatures) {
+      if (now - v > DEDUP_WINDOW_MS) recentSignatures.delete(k);
+    }
+  }
+  return false;
+}
+
+async function ingestConsole(p: ConsoleErrorPayload): Promise<DevError | null> {
+  const sig = `c:${p.message}|${p.filename ?? ''}:${p.lineno ?? 0}`;
+  if (shouldSkipDuplicate(sig)) return null;
+
   const s = await load();
   const ws = findWorkspaceForOrigin(s.workspaces, p.origin);
   const e: DevError = {
@@ -114,10 +140,14 @@ async function ingestConsole(p: ConsoleErrorPayload): Promise<DevError> {
     status: 'new',
   };
   await pushError(e);
+  if (ws) void runAgentForError(e.id, s.settings.defaultAgent);
   return e;
 }
 
-async function ingestNetwork(p: NetworkErrorPayload): Promise<DevError> {
+async function ingestNetwork(p: NetworkErrorPayload): Promise<DevError | null> {
+  const sig = `n:${p.method}:${p.url}:${p.status}`;
+  if (shouldSkipDuplicate(sig)) return null;
+
   const s = await load();
   const ws = findWorkspaceForOrigin(s.workspaces, p.origin);
   const e: DevError = {
@@ -133,6 +163,7 @@ async function ingestNetwork(p: NetworkErrorPayload): Promise<DevError> {
     status: 'new',
   };
   await pushError(e);
+  if (ws && p.status >= 500) void runAgentForError(e.id, s.settings.defaultAgent);
   return e;
 }
 

@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
-import type { DevError, StorageSchema, AgentName } from '@/types';
+import type { DevError, StorageSchema } from '@/types';
 import { load } from '@/lib/storage';
-import { ErrorCard } from './ErrorCard';
 import { Onboarding } from './Onboarding';
+import { Settings } from './Settings';
+
+type View = 'live' | 'settings';
 
 export function SidePanel() {
   const [state, setState] = useState<StorageSchema | null>(null);
+  const [view, setView] = useState<View>('live');
 
   useEffect(() => {
     let mounted = true;
@@ -18,59 +21,96 @@ export function SidePanel() {
     };
   }, []);
 
-  if (!state) return <div className="p-4 text-sm text-torya-muted">Loading…</div>;
+  // Auto-jump to settings when no workspace is configured.
+  useEffect(() => {
+    if (state?.onboarding.completed && state.workspaces.length === 0 && view === 'live') {
+      setView('settings');
+    }
+  }, [state?.onboarding.completed, state?.workspaces.length]);
 
-  if (!state.onboarding.completed) {
-    return <Onboarding state={state} />;
+  if (!state) return <div className="p-4 text-sm text-torya-muted">Loading…</div>;
+  if (!state.onboarding.completed) return <Onboarding state={state} />;
+  if (view === 'settings') {
+    return <Settings state={state} onBack={() => setView('live')} />;
   }
 
-  const liveErrors = state.errors.filter((e) => e.status === 'new' || e.status === 'running');
   const ws = state.workspaces[0];
+  const agentNames = state.agents.filter((a) => a.available).map((a) => a.name).join(' ');
+  const recent = state.errors.slice(0, 30);
 
   return (
     <div className="flex h-full flex-col">
       <header className="border-b border-torya-border px-4 py-3 text-sm">
         <div className="flex items-center justify-between">
-          <strong className="text-torya-text">🐢 Torya</strong>
+          <strong>🐶 Torya</strong>
           <button
             className="text-torya-muted hover:text-torya-text"
-            onClick={() => chrome.runtime.openOptionsPage()}
+            onClick={() => setView('settings')}
             title="Settings"
           >
             ⚙
           </button>
         </div>
-        <div className="mt-2 text-xs text-torya-muted">
-          📁 {ws ? ws.name : 'No workspace'} ·{' '}
-          🤖{' '}
-          {state.agents.filter((a) => a.available).map((a) => a.name).join(' ') || 'no agents'}
+        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-torya-muted">
+          <span>📁 {ws ? ws.name : '—'}</span>
+          <span>🤖 {agentNames || '—'}</span>
+          <span>🌉 {state.bridge.version ? '✅' : '❌'}</span>
         </div>
+        {!ws && (
+          <div className="mt-2 rounded bg-amber-500/10 p-2 text-xs text-amber-200">
+            No workspace mapped.{' '}
+            <button
+              className="underline hover:text-amber-100"
+              onClick={() => setView('settings')}
+            >
+              Add one in settings →
+            </button>
+          </div>
+        )}
       </header>
 
-      <main className="flex-1 overflow-auto p-3 space-y-2">
-        {liveErrors.length === 0 ? (
-          <div className="rounded-lg border border-torya-border p-6 text-center text-sm text-torya-muted">
-            No live errors. Open a localhost dev server and Torya will catch them automatically.
+      <main className="flex-1 overflow-auto px-3 py-2">
+        {recent.length === 0 ? (
+          <div className="mt-8 text-center text-xs text-torya-muted">
+            Watching for errors. Open a localhost dev page and trigger one.
           </div>
         ) : (
-          liveErrors.map((e) => (
-            <ErrorCard
-              key={e.id}
-              err={e}
-              onRun={(agent) => runAgent(e, agent)}
-              onDismiss={() => dismiss(e.id)}
-            />
-          ))
+          <ul className="space-y-1.5">
+            {recent.map((e) => (
+              <LogRow key={e.id} err={e} />
+            ))}
+          </ul>
         )}
       </main>
     </div>
   );
 }
 
-function runAgent(e: DevError, agent: AgentName) {
-  void chrome.runtime.sendMessage({ type: 'error/run-agent', id: e.id, agent });
+function LogRow({ err }: { err: DevError }) {
+  const ts = new Date(err.capturedAt).toLocaleTimeString();
+  const where = err.meta.file
+    ? `${trim(err.meta.file)}${err.meta.line ? `:${err.meta.line}` : ''}`
+    : '';
+  const statusIcon =
+    err.status === 'running' ? '⚙️'
+    : err.status === 'fixed' ? '✅'
+    : err.status === 'failed' ? '⚠️'
+    : err.status === 'dismissed' ? '·'
+    : '🔴';
+  return (
+    <li className="rounded border border-torya-border bg-torya-surface px-2 py-1.5 text-xs">
+      <div className="flex items-baseline gap-2">
+        <span className="shrink-0 font-mono text-torya-muted">{ts}</span>
+        <span>{statusIcon}</span>
+        <span className="min-w-0 flex-1 truncate text-torya-text">{err.message}</span>
+      </div>
+      {where && (
+        <div className="ml-12 mt-0.5 truncate text-[11px] text-torya-muted">{where}</div>
+      )}
+    </li>
+  );
 }
 
-function dismiss(id: string) {
-  void chrome.runtime.sendMessage({ type: 'error/dismiss', id });
+function trim(s: string, max = 64): string {
+  return s.length > max ? '…' + s.slice(-max + 1) : s;
 }
