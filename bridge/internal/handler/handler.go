@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/su-record/torya/bridge/internal/agents"
@@ -33,6 +35,8 @@ func (h *Handler) Dispatch(req proto.Request) {
 		h.ping(req)
 	case "detect-agents":
 		h.detectAgents(req)
+	case "detect-project":
+		h.detectProject(req)
 	case "set-workspaces":
 		h.setWorkspaces(req)
 	case "run-agent":
@@ -63,6 +67,59 @@ func (h *Handler) detectAgents(req proto.Request) {
 	defer cancel()
 	infos := agents.DetectAll(ctx)
 	_ = h.w.Write(proto.OK(req.ID, infos))
+}
+
+type detectProjectArgs struct {
+	Origin string `json:"origin"` // e.g. "http://localhost:5173"
+	Port   int    `json:"port"`
+}
+
+func (h *Handler) detectProject(req proto.Request) {
+	var a detectProjectArgs
+	if err := json.Unmarshal(req.Args, &a); err != nil {
+		_ = h.w.Write(proto.Err(req.ID, "bad_args", err.Error()))
+		return
+	}
+	port := a.Port
+	if port == 0 && a.Origin != "" {
+		port = portFromOrigin(a.Origin)
+	}
+	if port == 0 {
+		_ = h.w.Write(proto.Err(req.ID, "bad_args", "origin or port required"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	info, err := agents.DetectPort(ctx, port)
+	if err != nil {
+		_ = h.w.Write(proto.Err(req.ID, "not_found", err.Error()))
+		return
+	}
+	_ = h.w.Write(proto.OK(req.ID, info))
+}
+
+func portFromOrigin(origin string) int {
+	// Tolerate http://host:port and https://host:port
+	s := origin
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.Index(s, "/"); i >= 0 {
+		s = s[:i]
+	}
+	if i := strings.LastIndex(s, ":"); i >= 0 {
+		if p, err := strconv.Atoi(s[i+1:]); err == nil {
+			return p
+		}
+	}
+	// http defaults
+	if strings.HasPrefix(origin, "https://") {
+		return 443
+	}
+	if strings.HasPrefix(origin, "http://") {
+		return 80
+	}
+	return 0
 }
 
 type setWorkspacesArgs struct {

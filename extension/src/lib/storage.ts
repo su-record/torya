@@ -10,10 +10,10 @@ const DEFAULTS: StorageSchema = {
     defaultAgent: 'claude',
     terminalPreference: 'cmux',
     autoDirectMode: false,
-    captureRules: { console: true, rejection: true, network: true, dom: false },
+    captureRules: { console: true, rejection: true, network: true, dom: true },
     ignoreOrigins: [],
   },
-  secrets: {},
+  directMode: { active: null, keys: {} },
   errors: [],
 };
 

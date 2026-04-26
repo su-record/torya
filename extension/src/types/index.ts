@@ -68,6 +68,13 @@ export interface BridgeState {
   arch?: string;
 }
 
+export type LlmVendor = 'claude' | 'openai' | 'gemini';
+
+export interface DirectModeState {
+  active: LlmVendor | null;
+  keys: Partial<Record<LlmVendor, string>>;
+}
+
 export interface StorageSchema {
   schemaVersion: 1;
   onboarding: OnboardingState;
@@ -75,7 +82,7 @@ export interface StorageSchema {
   workspaces: Workspace[];
   agents: AgentInfo[];
   settings: Settings;
-  secrets: { claudeApiKey?: string };
+  directMode: DirectModeState;
   errors: DevError[];
 }
 
@@ -107,8 +114,16 @@ export type ExtMsg =
   | { type: 'error/quick-fix'; id: string }
   | { type: 'bridge/status' }
   | { type: 'bridge/pick-folder'; title?: string }
+  | { type: 'bridge/detect-project'; origin: string }
   | { type: 'workspace/upsert'; workspace: Workspace }
   | { type: 'agents/redetect' };
+
+export interface DetectedProject {
+  port: number;
+  pid: number;
+  cwd: string;
+  command?: string;
+}
 
 export interface ConsoleErrorPayload {
   message: string;

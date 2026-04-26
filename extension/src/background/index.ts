@@ -7,6 +7,7 @@ import {
   updateError,
   setAgents,
   findWorkspaceForOrigin,
+  upsertWorkspace,
 } from '@/lib/storage';
 import { uuid } from '@/lib/uuid';
 import type {
@@ -14,9 +15,12 @@ import type {
   AgentName,
   BridgeResponse,
   ConsoleErrorPayload,
+  DetectedProject,
   DevError,
+  DomErrorPayload,
   ExtMsg,
   NetworkErrorPayload,
+  Workspace,
 } from '@/types';
 
 const log = (...a: unknown[]) => console.log('[torya:bg]', ...a);
@@ -76,6 +80,8 @@ async function handleMessage(msg: ExtMsg): Promise<unknown> {
       return await ingestConsole(msg.payload);
     case 'capture/network':
       return await ingestNetwork(msg.payload);
+    case 'capture/dom':
+      return await ingestDom(msg.payload);
     case 'error/dismiss':
       return await updateError(msg.id, { status: 'dismissed' });
     case 'error/run-agent':
@@ -121,11 +127,18 @@ function shouldSkipDuplicate(sig: string): boolean {
 }
 
 async function ingestConsole(p: ConsoleErrorPayload): Promise<DevError | null> {
+  let s = await load();
+  // Honor capture rules
+  if (p.kind === 'rejection' && !s.settings.captureRules.rejection) return null;
+  if (p.kind !== 'rejection' && !s.settings.captureRules.console) return null;
+
   const sig = `c:${p.message}|${p.filename ?? ''}:${p.lineno ?? 0}`;
   if (shouldSkipDuplicate(sig)) return null;
 
-  const s = await load();
-  const ws = findWorkspaceForOrigin(s.workspaces, p.origin);
+  let ws = findWorkspaceForOrigin(s.workspaces, p.origin);
+  if (!ws) ws = await tryAutoMap(p.origin);
+  if (ws) s = await load(); // refresh to include the new workspace
+
   const e: DevError = {
     id: uuid(),
     capturedAt: p.ts,
@@ -145,11 +158,15 @@ async function ingestConsole(p: ConsoleErrorPayload): Promise<DevError | null> {
 }
 
 async function ingestNetwork(p: NetworkErrorPayload): Promise<DevError | null> {
+  let s = await load();
+  if (!s.settings.captureRules.network) return null;
+
   const sig = `n:${p.method}:${p.url}:${p.status}`;
   if (shouldSkipDuplicate(sig)) return null;
 
-  const s = await load();
-  const ws = findWorkspaceForOrigin(s.workspaces, p.origin);
+  let ws = findWorkspaceForOrigin(s.workspaces, p.origin);
+  if (!ws) ws = await tryAutoMap(p.origin);
+  if (ws) s = await load();
   const e: DevError = {
     id: uuid(),
     capturedAt: p.ts,
@@ -165,6 +182,74 @@ async function ingestNetwork(p: NetworkErrorPayload): Promise<DevError | null> {
   await pushError(e);
   if (ws && p.status >= 500) void runAgentForError(e.id, s.settings.defaultAgent);
   return e;
+}
+
+async function ingestDom(p: DomErrorPayload): Promise<DevError | null> {
+  let s = await load();
+  if (!s.settings.captureRules.dom) return null;
+
+  const sig = `d:${p.message}`;
+  if (shouldSkipDuplicate(sig)) return null;
+
+  let ws = findWorkspaceForOrigin(s.workspaces, p.origin);
+  if (!ws) ws = await tryAutoMap(p.origin);
+  if (ws) s = await load();
+  const e: DevError = {
+    id: uuid(),
+    capturedAt: p.ts,
+    source: 'dom',
+    severity: 'warn',
+    origin: p.origin,
+    url: p.url,
+    message: p.message,
+    meta: { domSnippet: p.snippet },
+    workspaceId: ws?.id,
+    status: 'new',
+  };
+  await pushError(e);
+  // DOM errors are usually low-severity (404 image etc.) — don't auto-trigger
+  // an agent run. Surface them in the live log only.
+  return e;
+}
+
+// Negative cache so we don't hammer lsof for origins that have no listener.
+const recentDetectFailures = new Map<string, number>();
+const DETECT_FAIL_TTL = 30_000;
+
+async function tryAutoMap(origin: string): Promise<Workspace | undefined> {
+  // Only auto-detect for localhost / loopback origins.
+  if (!/^https?:\/\/(localhost|127\.0\.0\.1|\[?::1]?)/i.test(origin)) return undefined;
+  const lastFail = recentDetectFailures.get(origin);
+  if (lastFail !== undefined && Date.now() - lastFail < DETECT_FAIL_TTL) return undefined;
+
+  try {
+    const det = await bridge.send<DetectedProject>('detect-project', { origin });
+    if (!det?.cwd) {
+      recentDetectFailures.set(origin, Date.now());
+      return undefined;
+    }
+    const s = await load();
+    const ws: Workspace = {
+      id: uuid(),
+      name: det.cwd.split('/').filter(Boolean).pop() || 'workspace',
+      originPattern: origin,
+      rootPath: det.cwd,
+      defaultAgent: s.settings.defaultAgent,
+      terminalPreference: s.settings.terminalPreference,
+    };
+    await upsertWorkspace(ws);
+    // Push updated roots to the bridge so safefs allows ops in this folder.
+    const updated = await load();
+    await bridge
+      .send('set-workspaces', { workspaces: updated.workspaces })
+      .catch(() => undefined);
+    log('auto-mapped', origin, '→', det.cwd);
+    return ws;
+  } catch (e) {
+    log('auto-map failed', origin, e);
+    recentDetectFailures.set(origin, Date.now());
+    return undefined;
+  }
 }
 
 async function runAgentForError(id: string, agent: AgentName): Promise<{ ok: boolean }> {
