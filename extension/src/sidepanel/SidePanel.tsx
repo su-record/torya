@@ -38,9 +38,14 @@ export function SidePanel() {
     let mounted = true;
     const refresh = async () => {
       try {
+        // The side panel is anchored to a specific Chrome window. Use that
+        // window's active tab — `lastFocusedWindow` was unreliable when the
+        // user had a second Chrome window or detached DevTools, returning a
+        // tab from a window the user wasn't actually viewing.
+        const win = await chrome.windows.getCurrent();
         const [tab] = await chrome.tabs.query({
           active: true,
-          lastFocusedWindow: true,
+          windowId: win.id,
         });
         if (!mounted) return;
         if (tab?.url) {
