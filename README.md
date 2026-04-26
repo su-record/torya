@@ -96,11 +96,39 @@ torya/
 
 ## Built for the cmux × AIM Intelligence Hackathon
 
-🛠 **Track**: Developer Tooling. Torya makes cmux the natural home for
-browser-side debugging — every captured error lands in a cmux workspace as a
-ready-to-run agent prompt.
+🏆 **1st Place — Developer Tooling Track** (cmux × AIM Intelligence Hackathon, 2026-04-26).
 
-📅 Submission: 2026-04-26.
+Torya makes cmux the natural home for browser-side debugging — every captured
+error lands in a cmux workspace as a ready-to-run agent prompt.
+
+---
+
+## Roadmap
+
+Things we wanted in the hackathon build but ran out of time for, plus the next
+round of polish:
+
+### 🚀 Coming next
+
+- **Universal agent system prompt** — a vendor-agnostic prompt that drives
+  `claude`, `codex`, `gemini` (and friends) to the same fix quality, instead of
+  per-agent tweaking.
+- **Direct mode (GA)** — finish and surface the currently-hidden API-key path so
+  small fixes are applied as patches without spawning a terminal.
+- **Broader error coverage** — capture and route a wider range of failure modes
+  (unhandled promise rejections, worker errors, CSP violations, slow/cancelled
+  requests, source-map-resolved stacks).
+- **Screenshot context for DOM errors** — when a DOM/visual hiccup is caught,
+  attach the current viewport screenshot so the agent can reason about the
+  rendered state, not just the stack trace.
+
+### 🔍 To audit
+
+- End-to-end matrix across the supported agents (`claude`, `codex`, `gemini`,
+  with/without `cmux`) to confirm prompt → fix loop is reliable.
+- Error dedup window + payload size limits under real-world spammy pages.
+- Native Messaging reconnect behavior across Chrome restarts and bridge
+  upgrades.
 
 ---
 
