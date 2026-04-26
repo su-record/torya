@@ -10,10 +10,11 @@ import { uuid } from '@/lib/uuid';
 
 interface Props {
   state: StorageSchema;
+  activeOrigin: string | null;
   onBack: () => void;
 }
 
-export function Settings({ state, onBack }: Props) {
+export function Settings({ state, activeOrigin, onBack }: Props) {
   return (
     <div className="flex h-full flex-col bg-torya-bg text-torya-text">
       <header className="flex items-center gap-2 border-b border-torya-border px-3 py-3 text-sm">
@@ -36,17 +37,17 @@ export function Settings({ state, onBack }: Props) {
           </div>
         </Section>
 
-        <Section title="Workspaces">
-          <WorkspacesPanel state={state} />
+        <Section title="Workspace">
+          <WorkspacesPanel state={state} activeOrigin={activeOrigin} />
         </Section>
 
         <Section title="Default agent">
           <AgentPicker state={state} />
         </Section>
 
-        <Section title="Direct mode">
+        {/* <Section title="Direct mode">
           <DirectModePanel state={state} />
-        </Section>
+        </Section> */}
 
         <Section title="Capture rules">
           <CapturePanel state={state} />
@@ -83,43 +84,56 @@ function Section({
 
 // ---------------------------------------------------------------- Workspaces
 
-function WorkspacesPanel({ state }: { state: StorageSchema }) {
-  const [showManual, setShowManual] = useState(state.workspaces.length === 0);
-  const ws = state.workspaces;
+function WorkspacesPanel({
+  state,
+  activeOrigin,
+}: {
+  state: StorageSchema;
+  activeOrigin: string | null;
+}) {
+  // Show only the mapping for the tab the user is actually looking at.
+  // Storage may hold mappings for other origins (e.g. another localhost
+  // port on a different project) but exposing them here just makes the
+  // panel look like a list to manage — the mental model is "this tab's
+  // workspace", switched by switching tabs.
+  const current = activeOrigin
+    ? state.workspaces.find((w) => w.originPattern === activeOrigin)
+    : undefined;
+  const [showManual, setShowManual] = useState(!current);
 
   return (
     <div>
-      {ws.length === 0 ? (
+      {!activeOrigin ? (
+        <p className="mb-3 text-torya-muted">No active tab.</p>
+      ) : !current ? (
         <p className="mb-3 text-torya-muted">
-          Workspaces are auto-detected from your dev server's port. Errors from{' '}
-          <code className="text-torya-text">localhost</code> will trigger detection
-          on the fly.
+          No workspace mapped for{' '}
+          <code className="text-torya-text">{activeOrigin}</code>. Auto-detection
+          runs on first error, or add one below.
         </p>
       ) : (
         <ul className="mb-3 space-y-1.5">
-          {ws.map((w) => (
-            <li
-              key={w.id}
-              className="rounded border border-torya-border bg-torya-surface px-2.5 py-2"
-            >
-              <div className="flex items-baseline justify-between">
-                <span className="font-medium">{w.name}</span>
-                <button
-                  className="text-torya-muted hover:text-torya-danger"
-                  onClick={() => void removeWorkspace(state.workspaces, w.id)}
-                  title="Remove"
-                >
-                  ×
-                </button>
-              </div>
-              <div className="truncate text-torya-muted" title={w.originPattern}>
-                {w.originPattern}
-              </div>
-              <div className="truncate font-mono text-torya-muted" title={w.rootPath}>
-                {w.rootPath}
-              </div>
-            </li>
-          ))}
+          <li
+            key={current.id}
+            className="rounded border border-torya-border bg-torya-surface px-2.5 py-2"
+          >
+            <div className="flex items-baseline justify-between">
+              <span className="font-medium">{current.name}</span>
+              <button
+                className="text-torya-muted hover:text-torya-danger"
+                onClick={() => void removeWorkspace(state.workspaces, current.id)}
+                title="Remove"
+              >
+                ×
+              </button>
+            </div>
+            <div className="truncate text-torya-muted" title={current.originPattern}>
+              {current.originPattern}
+            </div>
+            <div className="truncate font-mono text-torya-muted" title={current.rootPath}>
+              {current.rootPath}
+            </div>
+          </li>
         </ul>
       )}
 
@@ -338,7 +352,9 @@ const VENDORS: Array<{ id: LlmVendor; label: string; sub: string; placeholder: s
   { id: 'gemini', label: 'Gemini', sub: 'Google',    placeholder: 'AIza...' },
 ];
 
-function DirectModePanel({ state }: { state: StorageSchema }) {
+// Hidden from the Settings UI but kept around for quick re-enable —
+// uncomment the <Section> render above to bring it back.
+export function DirectModePanel({ state }: { state: StorageSchema }) {
   const dm = state.directMode;
   // Always show all vendors. The "visible" vendor in the select is
   // dm.active if set, otherwise default to Claude. The visible vendor is

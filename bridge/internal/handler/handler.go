@@ -240,9 +240,21 @@ func buildCommand(agent, prompt string) string {
 		// human-in-the-loop prompt (which `-p` mode can't surface anyway).
 		return "claude --permission-mode acceptEdits -p " + q
 	case "codex":
-		return "codex exec " + q
+		// Three layers of "let me write files, please":
+		//  1. -s danger-full-access disables codex's macOS sandbox-exec
+		//     wrapper (otherwise spawned shells get "Operation not permitted"
+		//     when perl/sed try to create temp files in cwd).
+		//  2. --dangerously-bypass-approvals-and-sandbox skips every prompt
+		//     and codex's internal approval gate.
+		//  3. --skip-git-repo-check so demo dirs without a git root work.
+		// Belt-and-suspenders because user config.toml can otherwise put
+		// any of these back to their safe defaults.
+		return "codex exec -s danger-full-access --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check " + q
 	case "gemini":
-		return "gemini -p " + q
+		// --yolo auto-approves every tool call; --skip-trust bypasses the
+		// "trust this workspace?" gate that gemini shows the first time it
+		// sees a new cwd (otherwise our headless run would hang on stdin).
+		return "gemini --yolo --skip-trust -p " + q
 	default:
 		return agent + " " + q
 	}

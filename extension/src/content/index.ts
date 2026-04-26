@@ -6,18 +6,27 @@ import type {
   NetworkErrorPayload,
 } from '@/types';
 
+const TAG = '[torya:cs]';
+console.log(TAG, 'content script loaded', { rid: chrome.runtime?.id });
+
 // `chrome.runtime` is gone after the extension is reloaded but pages still
 // hold the old content script. Touching it then throws synchronously, which
 // would otherwise surface as "Uncaught Error: Extension context invalidated"
 // in the page console.
 function safeSend(msg: ExtMsg): void {
+  if (!chrome.runtime?.id) {
+    console.warn(TAG, 'drop: extension context invalidated — reload the page');
+    return;
+  }
   try {
-    const p = chrome.runtime?.sendMessage(msg);
+    const p = chrome.runtime.sendMessage(msg);
     if (p && typeof (p as Promise<unknown>).catch === 'function') {
-      (p as Promise<unknown>).catch(() => undefined);
+      (p as Promise<unknown>).catch((e: unknown) =>
+        console.warn(TAG, 'sendMessage failed', e),
+      );
     }
-  } catch {
-    /* extension context invalidated — silently drop */
+  } catch (e) {
+    console.warn(TAG, 'sendMessage threw', e);
   }
 }
 

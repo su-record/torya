@@ -12,7 +12,7 @@ const DEFAULTS: StorageSchema = {
     autoDirectMode: false,
     captureRules: { console: true, rejection: true, network: true, dom: true },
     ignoreOrigins: [],
-    captureServiceWorkerErrors: false,
+    captureServiceWorkerErrors: true,
     autoReloadOnFix: true,
   },
   directMode: { active: null, keys: {} },
@@ -20,8 +20,16 @@ const DEFAULTS: StorageSchema = {
 };
 
 export async function load(): Promise<StorageSchema> {
-  const got = await chrome.storage.local.get(null);
-  return { ...DEFAULTS, ...(got as Partial<StorageSchema>) };
+  const got = (await chrome.storage.local.get(null)) as Partial<StorageSchema>;
+  // Settings is the only nested object whose keys grow over time. Merge it
+  // one level deep so newly-added defaults (e.g. a freshly-shipped toggle)
+  // light up for existing users instead of silently sticking on the old
+  // (false) value just because the parent object was already persisted.
+  return {
+    ...DEFAULTS,
+    ...got,
+    settings: { ...DEFAULTS.settings, ...(got.settings ?? {}) },
+  };
 }
 
 export async function patch(p: Partial<StorageSchema>): Promise<void> {

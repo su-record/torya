@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -67,6 +68,31 @@ func CheckCmux() CmuxStatus {
 	if err != nil {
 		return CmuxStatus{Reason: "cmux CLI not found in PATH or known install locations"}
 	}
+	if ok, _ := pingCmux(bin); ok {
+		return CmuxStatus{Available: true, Bin: bin}
+	}
+	// Ping failed → daemon likely not running. On macOS we know where the
+	// app bundle lives (Launch Services + fallback paths), so try to start
+	// it and poll ping until ready. Without this, "cmux 앱 안 켜져 있음"
+	// silently demoted us to the system terminal.
+	if runtime.GOOS == "darwin" && tryLaunchCmuxApp() {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			time.Sleep(200 * time.Millisecond)
+			if ok, _ := pingCmux(bin); ok {
+				return CmuxStatus{Available: true, Bin: bin}
+			}
+		}
+		return CmuxStatus{Bin: bin, Reason: "cmux app launched but daemon did not respond within 3s"}
+	}
+	_, msg := pingCmux(bin)
+	if msg == "" {
+		msg = "unknown error"
+	}
+	return CmuxStatus{Bin: bin, Reason: fmt.Sprintf("cmux ping failed: %s", msg)}
+}
+
+func pingCmux(bin string) (bool, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, bin, "ping").CombinedOutput()
@@ -75,9 +101,31 @@ func CheckCmux() CmuxStatus {
 		if msg == "" {
 			msg = err.Error()
 		}
-		return CmuxStatus{Bin: bin, Reason: fmt.Sprintf("cmux ping failed: %s", msg)}
+		return false, msg
 	}
-	return CmuxStatus{Available: true, Bin: bin}
+	return true, ""
+}
+
+// tryLaunchCmuxApp attempts to start the cmux desktop app on macOS. We try
+// Launch Services first (`open -a cmux`) so user-specific installs work, and
+// fall back to direct .app bundle paths.
+func tryLaunchCmuxApp() bool {
+	if err := exec.Command("open", "-ga", "cmux").Run(); err == nil {
+		return true
+	}
+	candidates := []string{"/Applications/cmux.app"}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, filepath.Join(home, "Applications/cmux.app"))
+	}
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		if err := exec.Command("open", "-g", p).Run(); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // CmuxAvailable is the boolean shortcut around CheckCmux.
@@ -125,7 +173,11 @@ func summarizePrompt(cmd string) string {
 	for _, prefix := range []string{
 		"claude --permission-mode acceptEdits -p ",
 		"claude -p ",
+		"codex exec --dangerously-bypass-approvals-and-sandbox ",
+		"codex exec --full-auto ",
 		"codex exec ",
+		"gemini --yolo --skip-trust -p ",
+		"gemini --yolo -p ",
 		"gemini -p ",
 	} {
 		if strings.HasPrefix(s, prefix) {

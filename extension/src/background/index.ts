@@ -224,6 +224,19 @@ const lastAgentRunAt = new Map<string, number>();
 // Compute the dedup signature for an already-stored DevError. Used to
 // reopen capture for an error after the agent claims to have fixed it,
 // so we can confirm by silence (or demote on recurrence).
+// Errors that originate from the extension itself (or any other extension)
+// must never be fed to the agent — they're not bugs in the user's code, and
+// "fixing" them just trains the agent to add defensive guards for our own
+// reload churn. The most common offender is the page's residual error
+// listener catching `Extension context invalidated` after the extension is
+// reloaded but the tab isn't.
+function isExtensionNoise(p: ConsoleErrorPayload): boolean {
+  if (p.message?.includes('Extension context invalidated')) return true;
+  if (p.filename?.startsWith('chrome-extension://')) return true;
+  if (p.stack?.includes('chrome-extension://')) return true;
+  return false;
+}
+
 function signatureForError(e: DevError): string {
   if (e.source === 'network' && e.meta.request) {
     const r = e.meta.request;
@@ -237,10 +250,11 @@ function signatureForError(e: DevError): string {
 // for recurrence. If the same error fires again before VERIFY_WINDOW_MS,
 // the fix didn't take — demote to 'failed'. Otherwise mark 'fixed'.
 //
-// Combined with the ~600ms autoReload settle and a typical Vite reload of
-// a few hundred ms, this gives the freshly-loaded page roughly 2.5s of
-// real airtime to either reproduce the bug or stay quiet.
-const VERIFY_WINDOW_MS = 3_500;
+// Kept short: with the 600ms autoReload settle and ~300ms Vite reload, this
+// still leaves ~1s of real airtime — enough for a freshly-mounted page to
+// re-fire a synchronous error. The longer this window, the longer the UI
+// reads "verifying" after the terminal already finished.
+const VERIFY_WINDOW_MS = 2_000;
 const verifying = new Map<
   string,
   { errorId: string; signature: string; workspaceId?: string; timer: number }
@@ -292,6 +306,10 @@ async function ingestConsole(p: ConsoleErrorPayload): Promise<DevError | null> {
   log('ingestConsole:', p.kind, p.origin, p.message.slice(0, 80));
   if (!isLocalhost(p.origin)) {
     log('  ↳ skip: not localhost');
+    return null;
+  }
+  if (isExtensionNoise(p)) {
+    log('  ↳ skip: chrome-extension noise (our own context invalidation etc.)');
     return null;
   }
   let s = await load();
@@ -378,7 +396,11 @@ async function ingestNetwork(p: NetworkErrorPayload): Promise<DevError | null> {
   };
   await pushError(e);
   log('  ↳ pushed error', e.id);
-  if (ws && p.status >= 500 && (await shouldAutoRunAgent(ws.id))) {
+  // Anything that reaches here is a non-OK response or an outright fetch
+  // failure — Chrome shows it red in DevTools. Treat every captured
+  // network error as worth a fix run; the cooldown + in-flight gate in
+  // shouldAutoRunAgent stops storms.
+  if (ws && (await shouldAutoRunAgent(ws.id))) {
     log('  ↳ auto-run agent', s.settings.defaultAgent, 'for', e.id);
     void runAgentForError(e.id, s.settings.defaultAgent);
   } else {
@@ -388,16 +410,25 @@ async function ingestNetwork(p: NetworkErrorPayload): Promise<DevError | null> {
 }
 
 async function ingestDom(p: DomErrorPayload): Promise<DevError | null> {
+  log('ingestDom:', p.origin, p.message.slice(0, 80));
   let s = await load();
-  if (!s.settings.captureRules.dom) return null;
+  if (!s.settings.captureRules.dom) {
+    log('  ↳ skip: dom rule off');
+    return null;
+  }
 
   const sig = `d:${p.message}`;
   await noteRecurrenceIfVerifying(sig);
-  if (shouldSkipDuplicate(sig)) return null;
+  if (shouldSkipDuplicate(sig)) {
+    log('  ↳ skip: dedup hit', sig);
+    return null;
+  }
 
   let ws = findWorkspaceForOrigin(s.workspaces, p.origin);
   if (!ws) ws = await tryAutoMap(p.origin);
   if (ws) s = await load();
+  log('  ↳ workspace:', ws ? `${ws.name} (${ws.id})` : 'unmapped');
+
   const e: DevError = {
     id: uuid(),
     capturedAt: p.ts,
@@ -411,8 +442,13 @@ async function ingestDom(p: DomErrorPayload): Promise<DevError | null> {
     status: 'new',
   };
   await pushError(e);
-  // DOM errors are usually low-severity (404 image etc.) — don't auto-trigger
-  // an agent run. Surface them in the live log only.
+  log('  ↳ pushed error', e.id);
+  if (ws && (await shouldAutoRunAgent(ws.id))) {
+    log('  ↳ auto-run agent', s.settings.defaultAgent, 'for', e.id);
+    void runAgentForError(e.id, s.settings.defaultAgent);
+  } else {
+    log('  ↳ no auto-run (ws=', !!ws, 'gated by cooldown/in-flight)');
+  }
   return e;
 }
 

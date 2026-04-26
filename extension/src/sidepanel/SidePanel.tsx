@@ -11,7 +11,6 @@ export function SidePanel() {
   const [state, setState] = useState<StorageSchema | null>(null);
   const [view, setView] = useState<View>('live');
   const [activeOrigin, setActiveOrigin] = useState<string | null>(null);
-  const [showFixed, setShowFixed] = useState(false);
   // Re-render once a second so any in-flight agent run shows live elapsed.
   // Hook stays at the top of the component to satisfy rules of hooks.
   const [, setNowTick] = useState(0);
@@ -110,7 +109,13 @@ export function SidePanel() {
   if (!state) return <div className="p-4 text-sm text-torya-muted">Loading…</div>;
   if (!state.onboarding.completed) return <Onboarding state={state} />;
   if (view === 'settings') {
-    return <Settings state={state} onBack={() => setView('live')} />;
+    return (
+      <Settings
+        state={state}
+        activeOrigin={activeOrigin}
+        onBack={() => setView('live')}
+      />
+    );
   }
 
   const isDev = isLocalhost(activeOrigin);
@@ -126,7 +131,9 @@ export function SidePanel() {
   const isDone = (e: DevError) =>
     e.status === 'fixed' || e.status === 'dismissed';
   const active = allForOrigin.filter((e) => !isDone(e)).slice(0, 30);
-  const done = allForOrigin.filter(isDone).slice(0, 30);
+  // Keep the most recent 10 resolved entries as visible history; older ones
+  // fall off the bottom (storage already caps at 50 globally).
+  const done = allForOrigin.filter(isDone).slice(0, 10);
 
   return (
     <div className="flex h-full flex-col">
@@ -185,7 +192,7 @@ export function SidePanel() {
 
       <main
         className={`flex-1 overflow-auto px-3 py-2 ${
-          active.length === 0 && !showFixed ? 'flex flex-col' : ''
+          active.length === 0 && done.length === 0 ? 'flex flex-col' : ''
         }`}
       >
         {!isDev ? (
@@ -196,18 +203,11 @@ export function SidePanel() {
               to see live errors.
             </div>
           </div>
-        ) : active.length === 0 && !showFixed ? (
+        ) : active.length === 0 && done.length === 0 ? (
           <div className="m-auto text-center text-xs text-torya-muted">
-            {done.length > 0
-              ? `All clear · ${done.length} resolved`
-              : 'Watching '}
-            {done.length === 0 && (
-              <span className="font-mono text-torya-text">{activeOrigin}</span>
-            )}
+            Watching <span className="font-mono text-torya-text">{activeOrigin}</span>
             <div className="mt-1 text-torya-muted-2">
-              {done.length > 0
-                ? 'Next error will show up here.'
-                : 'Trigger an error in the page and it will appear here.'}
+              Trigger an error in the page and it will appear here.
             </div>
           </div>
         ) : (
@@ -215,17 +215,10 @@ export function SidePanel() {
             {active.map((e) => (
               <LogRow key={e.id} err={e} />
             ))}
-            {showFixed &&
-              done.map((e) => <LogRow key={e.id} err={e} dim />)}
+            {done.map((e) => (
+              <LogRow key={e.id} err={e} dim />
+            ))}
           </ul>
-        )}
-        {isDev && done.length > 0 && (
-          <button
-            className="mt-3 w-full rounded border border-dashed border-torya-border px-2 py-1.5 text-[11px] text-torya-muted-2 hover:border-torya-border-strong hover:text-torya-muted"
-            onClick={() => setShowFixed((v) => !v)}
-          >
-            {showFixed ? `Hide ${done.length} resolved` : `Show ${done.length} resolved`}
-          </button>
         )}
       </main>
     </div>
