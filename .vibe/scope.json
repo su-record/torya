@@ -1,0 +1,15 @@
+{
+  "auto": true,
+  "mode": "warn",
+  "allow": [
+    ".vibe/**",
+    "CLAUDE.md",
+    "AGENTS.md"
+  ],
+  "deny": [],
+  "reason": "auto-derived from active SPECs: .vibe/specs/project-spec-template.md",
+  "generatedAt": "2026-04-26T05:46:30.365Z",
+  "sources": [
+    ".vibe/specs/project-spec-template.md"
+  ]
+}

@@ -101,6 +101,8 @@ secrets/
 .coco-local/
 .claude/
 .gemini/
+.cursor/
+
 
 # ---------- MCP / auth caches ----------
 .mcp-auth/
@@ -113,3 +115,18 @@ secrets/
 .eslintcache
 .stylelintcache
 .prettiercache
+
+# core project hooks (personal)
+.claude/settings.local.json
+
+# Gemini CLI hooks (personal)
+.gemini/settings.json
+
+# Phase checkpoints (ephemeral)
+.vibe/checkpoints/
+
+# Project memory DB (local)
+.vibe/memories/
+
+# AI scratch files (ephemeral)
+.dev/scratch/

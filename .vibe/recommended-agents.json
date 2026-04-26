@@ -1,0 +1,63 @@
+{
+  "generatedAt": "2026-04-26T05:46:30.328Z",
+  "projectStacks": [
+    "typescript-node",
+    "typescript-react"
+  ],
+  "agents": [
+    {
+      "name": "typescript-reviewer",
+      "category": "review",
+      "priority": "high",
+      "rationale": "TypeScript type safety enforcement"
+    },
+    {
+      "name": "data-integrity-reviewer",
+      "category": "review",
+      "priority": "high",
+      "rationale": "Data validation and transaction safety"
+    },
+    {
+      "name": "test-coverage-reviewer",
+      "category": "review",
+      "priority": "medium",
+      "rationale": "Backend test coverage assurance"
+    },
+    {
+      "name": "react-reviewer",
+      "category": "review",
+      "priority": "high",
+      "rationale": "React component patterns and hooks validation"
+    },
+    {
+      "name": "performance-reviewer",
+      "category": "review",
+      "priority": "medium",
+      "rationale": "React render optimization"
+    },
+    {
+      "name": "security-reviewer",
+      "category": "review",
+      "priority": "medium",
+      "rationale": "OWASP Top 10 vulnerability detection"
+    },
+    {
+      "name": "architecture-reviewer",
+      "category": "review",
+      "priority": "medium",
+      "rationale": "Layer violations and SOLID principles"
+    },
+    {
+      "name": "simplicity-reviewer",
+      "category": "review",
+      "priority": "medium",
+      "rationale": "Over-abstraction and YAGNI detection"
+    },
+    {
+      "name": "git-history-reviewer",
+      "category": "review",
+      "priority": "medium",
+      "rationale": "Risk pattern detection from commit history"
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "language": "ko",
+  "quality": {
+    "strict": true,
+    "autoVerify": true
+  },
+  "stacks": [
+    {
+      "type": "typescript-node",
+      "path": ""
+    },
+    {
+      "type": "typescript-react",
+      "path": "extension"
+    }
+  ],
+  "details": {
+    "databases": [],
+    "stateManagement": [
+      "Zustand"
+    ],
+    "hosting": [],
+    "cicd": [
+      "GitHub Actions"
+    ],
+    "capabilities": []
+  },
+  "references": {
+    "rules": [
+      "~/.claude/vibe/rules/principles/quick-start.md",
+      "~/.claude/vibe/rules/principles/development-philosophy.md",
+      "~/.claude/vibe/rules/principles/communication-guide.md",
+      "~/.claude/vibe/rules/quality/checklist.md",
+      "~/.claude/vibe/rules/quality/bdd-contract-testing.md",
+      "~/.claude/vibe/rules/quality/testing-strategy.md",
+      "~/.claude/vibe/rules/standards/anti-patterns.md",
+      "~/.claude/vibe/rules/standards/code-structure.md",
+      "~/.claude/vibe/rules/standards/complexity-metrics.md",
+      "~/.claude/vibe/rules/standards/naming-conventions.md"
+    ],
+    "languages": [
+      "~/.claude/vibe/languages/typescript-node.md",
+      "~/.claude/vibe/languages/typescript-react.md"
+    ],
+    "templates": [
+      "~/.claude/vibe/templates/plan-template.md",
+      "~/.claude/vibe/templates/spec-template.md",
+      "~/.claude/vibe/templates/feature-template.md",
+      "~/.claude/vibe/templates/constitution-template.md",
+      "~/.claude/vibe/templates/contract-backend-template.md",
+      "~/.claude/vibe/templates/contract-frontend-template.md"
+    ]
+  }
+}

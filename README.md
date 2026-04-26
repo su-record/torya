@@ -97,3 +97,24 @@ ready-to-run agent prompt.
 ## License
 
 MIT.
+
+## Core Setup (AI Coding)
+
+This project uses [VIBE](https://github.com/su-record/vibe) AI coding framework.
+
+### Collaborator Install
+
+```bash
+# Global install (recommended)
+npm install -g @su-record/vibe
+vibe update
+
+# Or use vibe init to setup
+vibe init
+```
+
+### Usage
+
+Use slash commands in Claude Code:
+- `/vibe.spec "feature"` - Create SPEC document
+- `/vibe.run "feature"` - Execute implementation
