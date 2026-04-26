@@ -5,6 +5,7 @@ export type ErrorSeverity = 'error' | 'warn';
 export type ErrorStatus =
   | 'new'
   | 'running'
+  | 'verifying'
   | 'fixed'
   | 'failed'
   | 'dispatched'
@@ -41,7 +42,7 @@ export interface AgentRun {
   prompt: string;
   startedAt: number;
   endedAt?: number;
-  result?: 'fixed' | 'failed' | 'dispatched';
+  result?: 'fixed' | 'failed' | 'dispatched' | 'verifying';
 }
 
 export interface Workspace {

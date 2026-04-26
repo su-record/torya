@@ -216,9 +216,53 @@ function shouldSkipDuplicate(sig: string, windowMs = DEDUP_WINDOW_MS): boolean {
 
 // Per-workspace agent-run cooldown. Short window — the in-flight `running`
 // check below is the real guard against parallel runs; this only debounces
-// rapid-fire triggers right after one completes.
+// rapid-fire triggers right after one completes. Cleared whenever a run
+// finishes so a follow-up error can immediately retrigger.
 const AGENT_COOLDOWN_MS = 10_000;
 const lastAgentRunAt = new Map<string, number>();
+
+// Compute the dedup signature for an already-stored DevError. Used to
+// reopen capture for an error after the agent claims to have fixed it,
+// so we can confirm by silence (or demote on recurrence).
+function signatureForError(e: DevError): string {
+  if (e.source === 'network' && e.meta.request) {
+    const r = e.meta.request;
+    return `n:${r.method}:${r.url}:${r.status}`;
+  }
+  return `c:${e.message}|${e.meta.file ?? ''}:${e.meta.line ?? 0}`;
+}
+
+// Verification: when an agent run exits successfully, we don't immediately
+// trust it. We reopen the dedup window for that error's signature and watch
+// for recurrence. If the same error fires again before VERIFY_WINDOW_MS,
+// the fix didn't take — demote to 'failed'. Otherwise mark 'fixed'.
+const VERIFY_WINDOW_MS = 8_000;
+const verifying = new Map<
+  string,
+  { errorId: string; signature: string; workspaceId?: string; timer: number }
+>();
+
+function clearVerification(errorId: string): void {
+  const v = verifying.get(errorId);
+  if (!v) return;
+  clearTimeout(v.timer);
+  verifying.delete(errorId);
+}
+
+// Called from each ingest path. If the new event matches an in-flight
+// verification, the agent's fix didn't work — demote that error.
+async function noteRecurrenceIfVerifying(sig: string): Promise<void> {
+  for (const [errorId, v] of verifying) {
+    if (v.signature !== sig) continue;
+    clearVerification(errorId);
+    const cur = (await load()).errors.find((e) => e.id === errorId);
+    await updateError(errorId, {
+      status: 'failed',
+      run: cur?.run ? { ...cur.run, result: 'failed' } : undefined,
+    });
+    if (v.workspaceId) lastAgentRunAt.delete(v.workspaceId);
+  }
+}
 
 async function shouldAutoRunAgent(workspaceId: string): Promise<boolean> {
   const now = Date.now();
@@ -243,6 +287,7 @@ async function ingestConsole(p: ConsoleErrorPayload): Promise<DevError | null> {
   if (p.kind !== 'rejection' && !s.settings.captureRules.console) return null;
 
   const sig = `c:${p.message}|${p.filename ?? ''}:${p.lineno ?? 0}`;
+  await noteRecurrenceIfVerifying(sig);
   if (shouldSkipDuplicate(sig)) return null;
 
   let ws = findWorkspaceForOrigin(s.workspaces, p.origin);
@@ -275,6 +320,7 @@ async function ingestNetwork(p: NetworkErrorPayload): Promise<DevError | null> {
   if (!s.settings.captureRules.network) return null;
 
   const sig = `n:${p.method}:${p.url}:${p.status}`;
+  await noteRecurrenceIfVerifying(sig);
   if (shouldSkipDuplicate(sig, NETWORK_DEDUP_WINDOW_MS)) return null;
 
   let ws = findWorkspaceForOrigin(s.workspaces, p.origin);
@@ -304,6 +350,7 @@ async function ingestDom(p: DomErrorPayload): Promise<DevError | null> {
   if (!s.settings.captureRules.dom) return null;
 
   const sig = `d:${p.message}`;
+  await noteRecurrenceIfVerifying(sig);
   if (shouldSkipDuplicate(sig)) return null;
 
   let ws = findWorkspaceForOrigin(s.workspaces, p.origin);
@@ -454,12 +501,43 @@ async function runAgentForError(id: string, agent: AgentName): Promise<{ ok: boo
       return { ok: true };
     }
     const code = (final.data as { code?: number } | undefined)?.code ?? 0;
-    const result: 'fixed' | 'failed' = code === 0 ? 'fixed' : 'failed';
+    if (code !== 0) {
+      await updateError(id, {
+        status: 'failed',
+        run: cur?.run
+          ? { ...cur.run, tracked: true, endedAt: Date.now(), result: 'failed' }
+          : undefined,
+      });
+      lastAgentRunAt.delete(ws.id);
+      return { ok: false };
+    }
+    // Success: don't trust the exit code alone. Reopen capture for this
+    // signature and watch — if the same error fires again within
+    // VERIFY_WINDOW_MS the fix didn't take, otherwise mark fixed.
+    const sig = signatureForError(err);
+    recentSignatures.delete(sig);
     await updateError(id, {
-      status: result,
-      run: cur?.run ? { ...cur.run, tracked: true, endedAt: Date.now(), result } : undefined,
+      status: 'verifying',
+      run: cur?.run
+        ? { ...cur.run, tracked: true, endedAt: Date.now(), result: 'verifying' }
+        : undefined,
     });
-    return { ok: result === 'fixed' };
+    const timer = setTimeout(() => {
+      verifying.delete(id);
+      void (async () => {
+        const latest = (await load()).errors.find((e) => e.id === id);
+        if (!latest || latest.status !== 'verifying') return;
+        await updateError(id, {
+          status: 'fixed',
+          run: latest.run ? { ...latest.run, result: 'fixed' } : undefined,
+        });
+        lastAgentRunAt.delete(ws.id);
+      })();
+    }, VERIFY_WINDOW_MS) as unknown as number;
+    verifying.set(id, { errorId: id, signature: sig, workspaceId: ws.id, timer });
+    // Also clear cooldown immediately — verification is its own debounce.
+    lastAgentRunAt.delete(ws.id);
+    return { ok: true };
   } catch (e) {
     log('run-agent failed', e);
     const cur = (await load()).errors.find((e) => e.id === id);
@@ -467,6 +545,7 @@ async function runAgentForError(id: string, agent: AgentName): Promise<{ ok: boo
       status: 'failed',
       run: cur?.run ? { ...cur.run, endedAt: Date.now(), result: 'failed' } : undefined,
     });
+    lastAgentRunAt.delete(ws.id);
     return { ok: false };
   }
 }

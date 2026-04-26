@@ -15,7 +15,9 @@ export function SidePanel() {
   // Re-render once a second so any in-flight agent run shows live elapsed.
   // Hook stays at the top of the component to satisfy rules of hooks.
   const [, setNowTick] = useState(0);
-  const hasRunning = !!state?.errors.some((e) => e.status === 'running');
+  const hasRunning = !!state?.errors.some(
+    (e) => e.status === 'running' || e.status === 'verifying',
+  );
   useEffect(() => {
     if (!hasRunning) return;
     const id = window.setInterval(() => setNowTick((n) => n + 1), 1000);
@@ -277,6 +279,7 @@ function CapturedStep({ err }: { err: DevError }) {
 function RunStep({ err }: { err: DevError }) {
   const run = err.run!;
   const isRunning = err.status === 'running';
+  const isVerifying = err.status === 'verifying';
   const isFixed = err.status === 'fixed';
   const isFailed = err.status === 'failed';
   const isDispatched = err.status === 'dispatched';
@@ -294,6 +297,8 @@ function RunStep({ err }: { err: DevError }) {
 
   const headerIcon = isRunning ? (
     <Spinner />
+  ) : isVerifying ? (
+    <Spinner />
   ) : isFixed ? (
     <span className="text-emerald-400">✓</span>
   ) : isFailed ? (
@@ -304,13 +309,15 @@ function RunStep({ err }: { err: DevError }) {
 
   const headerText = isRunning
     ? `fixing in ${run.agent}`
-    : isFixed
-      ? `fix completed`
-      : isFailed
-        ? `agent run failed`
-        : isDispatched
-          ? `opened in ${run.via}`
-          : `done`;
+    : isVerifying
+      ? `verifying fix…`
+      : isFixed
+        ? `fix completed`
+        : isFailed
+          ? `fix didn't take`
+          : isDispatched
+            ? `opened in ${run.via}`
+            : `done`;
 
   return (
     <div className="border-t border-torya-border bg-torya-bg/40 px-2.5 py-2">
