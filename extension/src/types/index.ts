@@ -80,6 +80,11 @@ export interface Settings {
   // debugging" banner on the tab and blocks DevTools from attaching at the
   // same time, so it's off by default.
   captureServiceWorkerErrors?: boolean;
+  // After a successful agent run, reload matching localhost tabs before
+  // running the verification watch. Catches the common "HMR didn't pick
+  // up the fix" case automatically. Default on — toggle off if the page
+  // holds expensive in-memory state you don't want to lose.
+  autoReloadOnFix?: boolean;
 }
 
 export interface OnboardingState {

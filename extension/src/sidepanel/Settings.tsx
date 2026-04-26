@@ -52,6 +52,10 @@ export function Settings({ state, onBack }: Props) {
           <CapturePanel state={state} />
         </Section>
 
+        <Section title="Auto reload on fix">
+          <AutoReloadPanel state={state} />
+        </Section>
+
         <Section title="Service worker errors (experimental)">
           <SwCapturePanel state={state} />
         </Section>
@@ -519,6 +523,36 @@ const CAPTURE_LABELS: Record<keyof StorageSchema['settings']['captureRules'], st
   network: 'Network 4xx/5xx',
   dom: 'DOM resource load failures (img/script/link)',
 };
+
+function AutoReloadPanel({ state }: { state: StorageSchema }) {
+  const on = state.settings.autoReloadOnFix !== false;
+  return (
+    <label className="flex cursor-pointer items-start gap-2 rounded border border-transparent px-2 py-1.5 hover:border-torya-border">
+      <input
+        type="checkbox"
+        className="mt-0.5 accent-torya-accent"
+        checked={on}
+        onChange={(e) =>
+          void patch({
+            settings: {
+              ...state.settings,
+              autoReloadOnFix: e.target.checked,
+            },
+          })
+        }
+      />
+      <span className="flex-1">
+        <span className="block text-torya-text">
+          Reload localhost tabs after a successful fix
+        </span>
+        <span className="mt-0.5 block text-torya-muted-2">
+          Catches the common "HMR didn't pick up the edit" case. Turn off if
+          your page holds in-memory state you don't want to lose.
+        </span>
+      </span>
+    </label>
+  );
+}
 
 function SwCapturePanel({ state }: { state: StorageSchema }) {
   const on = !!state.settings.captureServiceWorkerErrors;

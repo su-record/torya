@@ -522,6 +522,11 @@ async function runAgentForError(id: string, agent: AgentName): Promise<{ ok: boo
         ? { ...cur.run, tracked: true, endedAt: Date.now(), result: 'verifying' }
         : undefined,
     });
+    // Reload matching tabs so the verification watch sees requests from
+    // the freshly-loaded page (catches HMR-missed-the-update cases).
+    if (s.settings.autoReloadOnFix !== false) {
+      void reloadOriginTabs(err.origin);
+    }
     const timer = setTimeout(() => {
       verifying.delete(id);
       void (async () => {
@@ -547,6 +552,24 @@ async function runAgentForError(id: string, agent: AgentName): Promise<{ ok: boo
     });
     lastAgentRunAt.delete(ws.id);
     return { ok: false };
+  }
+}
+
+async function reloadOriginTabs(origin: string): Promise<void> {
+  try {
+    const tabs = await chrome.tabs.query({});
+    for (const t of tabs) {
+      if (t.id === undefined || !t.url) continue;
+      try {
+        if (new URL(t.url).origin === origin) {
+          await chrome.tabs.reload(t.id, { bypassCache: false });
+        }
+      } catch {
+        /* ignore non-http URLs */
+      }
+    }
+  } catch (e) {
+    log('reloadOriginTabs failed', e);
   }
 }
 
