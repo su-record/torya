@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -51,37 +50,6 @@ func (darwinSpawner) Run(cwd, cmd string) (string, <-chan int, error) {
 	return "Terminal.app", done, nil
 }
 
-func runMarkerDir() (string, error) {
-	dir := filepath.Join(os.TempDir(), "torya-runs")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
-	return dir, nil
-}
-
-// waitForMarker polls for the marker file. We give up after a long timeout so
-// abandoned runs don't leak goroutines forever, but it's generous enough
-// (24h) that real agent sessions always complete first.
-func waitForMarker(path string, done chan<- int) {
-	defer close(done)
-	defer os.Remove(path)
-	deadline := time.Now().Add(24 * time.Hour)
-	for {
-		if time.Now().After(deadline) {
-			done <- -1
-			return
-		}
-		if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
-			line := strings.TrimSpace(string(data))
-			if code, err := strconv.Atoi(line); err == nil {
-				done <- code
-				return
-			}
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-}
-
 func quoteAppleScript(s string) string {
 	return `\"` + strings.ReplaceAll(s, `"`, `\\\"`) + `\"`
 }
@@ -93,7 +61,3 @@ func escapeAppleScript(s string) string {
 	return s
 }
 
-// shellQuote single-quotes a path/word for safe shell inclusion.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
-}

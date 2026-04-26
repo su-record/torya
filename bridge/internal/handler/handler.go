@@ -171,11 +171,12 @@ func (h *Handler) runAgent(req proto.Request) {
 	switch a.Terminal {
 	case "cmux":
 		if terminal.CmuxAvailable() {
-			via = "cmux"
-			// TODO(phase-6): real cmux RPC. For now fall through to system terminal
-			// and report via=cmux-fallback in progress messages.
-			via = "cmux-fallback"
+			h.runWithSpawner(req, "cmux", terminal.Cmux(), a.Cwd, cmdLine, start)
+			return
 		}
+		// cmux selected but app not running — fall through to system so the
+		// user still sees something happen.
+		via = "cmux-fallback"
 	case "silent":
 		h.runWithSpawner(req, "silent", terminal.Silent(), a.Cwd, cmdLine, start)
 		return
