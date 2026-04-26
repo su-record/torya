@@ -12,32 +12,42 @@ leave the browser.
 
 ---
 
-## ⚡ 1-minute setup
+## ⚡ Install (60s)
 
-> Tested on macOS. Linux / Windows builds ship via `make -C bridge release`.
+> macOS / Linux. Tested on macOS. Windows: see `installer/install.ps1`.
 
 ```bash
-# 1) clone
-git clone https://github.com/su-record/torya.git && cd torya
+curl -fsSL https://raw.githubusercontent.com/su-record/torya/main/installer/install.sh | sh
+```
 
-# 2) build everything
+The installer:
+
+1. Downloads the bridge binary  → `~/.local/bin/torya-bridge`
+2. Downloads the extension dist → `~/.torya/extension`
+3. Opens `chrome://extensions` — toggle **Developer mode**, click
+   **Load unpacked**, and select `~/.torya/extension`
+4. Paste the resulting extension ID back into the prompt
+5. Registers the Chrome Native Messaging manifest and smoke-tests the bridge
+
+Then reload the extension once and click the toolbar icon — the side panel
+auto-detects the bridge in 2s. Add a workspace (Browse → pick your local
+project folder), start your dev server, and any error in the page will be
+captured and forwarded to the chosen coding agent in a fresh terminal.
+
+<details>
+<summary>From source (development)</summary>
+
+```bash
+git clone https://github.com/su-record/torya.git && cd torya
 pnpm install
 make -C bridge build
 pnpm --filter torya-extension build
 
-# 3) load the extension (unpacked)
-#    chrome://extensions → enable Developer mode → Load unpacked
-#    select the `extension/dist` folder, copy the printed extension ID
-
-# 4) register the bridge (needs the ID from step 3)
-TORYA_LOCAL_DEV=1 TORYA_EXTENSION_ID=<your-extension-id> ./installer/install.sh
-
-# 5) reload the extension once → click the toolbar icon → side panel opens
+# uses local ./bridge/dist + ./extension/dist instead of downloading
+TORYA_LOCAL_DEV=1 ./installer/install.sh
 ```
 
-The side panel auto-detects the bridge in 2s. Add a workspace (Browse → pick
-your local project folder), start your dev server, and any error in the page
-will be captured and forwarded to the chosen coding agent in a fresh terminal.
+</details>
 
 ---
 
