@@ -284,7 +284,7 @@ function AgentPicker({ state }: { state: StorageSchema }) {
 
       <div className="mt-2 flex items-center gap-3">
         <span className="text-torya-muted">Terminal:</span>
-        {(['cmux', 'system'] as const).map((t) => (
+        {(['cmux', 'system', 'silent'] as const).map((t) => (
           <label key={t} className="flex cursor-pointer items-center gap-1.5">
             <input
               type="radio"
@@ -300,6 +300,10 @@ function AgentPicker({ state }: { state: StorageSchema }) {
             {t}
           </label>
         ))}
+      </div>
+      <div className="mt-1 text-[11px] text-torya-muted-2">
+        <code className="text-torya-text">silent</code>은 Terminal.app을 띄우지
+        않고 백그라운드로 에이전트를 실행합니다.
       </div>
     </>
   );

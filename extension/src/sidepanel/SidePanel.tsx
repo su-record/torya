@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { DevError, StorageSchema } from '@/types';
 import { load } from '@/lib/storage';
+import { isLocalhost } from '@/lib/origin';
 import { Onboarding } from './Onboarding';
 import { Settings } from './Settings';
 
@@ -10,6 +11,15 @@ export function SidePanel() {
   const [state, setState] = useState<StorageSchema | null>(null);
   const [view, setView] = useState<View>('live');
   const [activeOrigin, setActiveOrigin] = useState<string | null>(null);
+  // Re-render once a second so any in-flight agent run shows live elapsed.
+  // Hook stays at the top of the component to satisfy rules of hooks.
+  const [, setNowTick] = useState(0);
+  const hasRunning = !!state?.errors.some((e) => e.status === 'running');
+  useEffect(() => {
+    if (!hasRunning) return;
+    const id = window.setInterval(() => setNowTick((n) => n + 1), 1000);
+    return () => window.clearInterval(id);
+  }, [hasRunning]);
 
   useEffect(() => {
     let mounted = true;
@@ -64,12 +74,17 @@ export function SidePanel() {
     };
   }, []);
 
-  // Auto-jump to settings when no workspace is configured.
+  // Proactively ask the bridge to map the active localhost origin so the
+  // workspace lights up before any error is captured.
   useEffect(() => {
-    if (state?.onboarding.completed && state.workspaces.length === 0 && view === 'live') {
-      setView('settings');
-    }
-  }, [state?.onboarding.completed, state?.workspaces.length]);
+    if (!state || !isLocalhost(activeOrigin) || !activeOrigin) return;
+    const already = state.workspaces.some((w) => w.originPattern === activeOrigin);
+    if (already) return;
+    void chrome.runtime.sendMessage({
+      type: 'bridge/detect-project',
+      origin: activeOrigin,
+    });
+  }, [state, activeOrigin]);
 
   if (!state) return <div className="p-4 text-sm text-torya-muted">Loading…</div>;
   if (!state.onboarding.completed) return <Onboarding state={state} />;
@@ -77,66 +92,84 @@ export function SidePanel() {
     return <Settings state={state} onBack={() => setView('live')} />;
   }
 
-  const ws = state.workspaces[0];
+  const isDev = isLocalhost(activeOrigin);
+  const ws = activeOrigin
+    ? state.workspaces.find((w) => w.originPattern === activeOrigin) ?? state.workspaces[0]
+    : state.workspaces[0];
   const agentNames = state.agents.filter((a) => a.available).map((a) => a.name).join(' ');
-  const recent = (
-    activeOrigin
-      ? state.errors.filter((e) => e.origin === activeOrigin)
-      : state.errors
-  ).slice(0, 30);
+  const recent = isDev
+    ? state.errors.filter((e) => e.origin === activeOrigin).slice(0, 30)
+    : [];
 
   return (
     <div className="flex h-full flex-col">
-      <header className="border-b border-torya-border px-3 py-2.5">
-        <div className="flex items-center gap-2 text-xs text-torya-muted">
-          <span title={ws ? ws.rootPath : 'no workspace'}>
-            📁 {ws ? ws.name : '—'}
-          </span>
-          <span title="default agent">🤖 {agentNames || '—'}</span>
-          <span title="bridge status">
-            🌉 {state.bridge.version ? '✅' : '❌'}
-          </span>
-          <span className="ml-auto flex items-center gap-1">
-            {recent.length > 0 && (
+      {isDev && (
+        <header className="border-b border-torya-border px-3 py-2.5">
+          <div className="flex items-center gap-2 text-xs text-torya-muted">
+            <span title={ws ? ws.rootPath : 'no workspace'}>
+              📁 {ws ? ws.name : '—'}
+            </span>
+            <span title="default agent">🤖 {agentNames || '—'}</span>
+            <span title="bridge status">
+              🌉 {state.bridge.version ? '✅' : '❌'}
+            </span>
+            <span className="ml-auto flex items-center gap-1">
+              {state.errors.length > 0 && (
+                <button
+                  className="rounded px-1.5 py-0.5 hover:bg-torya-surface hover:text-torya-text"
+                  onClick={() =>
+                    void chrome.runtime.sendMessage({ type: 'errors/clear' })
+                  }
+                  title={`Clear all ${state.errors.length} stored errors`}
+                >
+                  Clear
+                </button>
+              )}
               <button
-                className="rounded px-1.5 py-0.5 hover:bg-torya-surface hover:text-torya-text"
-                onClick={() =>
-                  void chrome.runtime.sendMessage({ type: 'errors/clear' })
-                }
-                title="Clear log"
+                className="rounded p-1.5 text-lg leading-none hover:bg-torya-surface hover:text-torya-text"
+                onClick={() => setView('settings')}
+                title="Settings"
               >
-                Clear
+                ⚙
               </button>
-            )}
-            <button
-              className="rounded p-1 hover:bg-torya-surface hover:text-torya-text"
-              onClick={() => setView('settings')}
-              title="Settings"
-            >
-              ⚙
-            </button>
-          </span>
-        </div>
-        {!ws && (
-          <div className="mt-2 rounded border border-torya-warn/30 bg-torya-warn-bg/40 p-2 text-xs text-torya-warn">
-            No workspace mapped.{' '}
-            <button
-              className="underline hover:text-torya-text"
-              onClick={() => setView('settings')}
-            >
-              Add one →
-            </button>
+            </span>
           </div>
-        )}
-      </header>
+          {!ws && (
+            <div className="mt-2 rounded border border-torya-warn/30 bg-torya-warn-bg/40 p-2 text-xs text-torya-warn">
+              No workspace mapped.{' '}
+              <button
+                className="underline hover:text-torya-text"
+                onClick={() => setView('settings')}
+              >
+                Add one →
+              </button>
+            </div>
+          )}
+        </header>
+      )}
 
-      <main className="flex-1 overflow-auto px-3 py-2">
-        {recent.length === 0 ? (
-          <div className="mt-8 text-center text-xs text-torya-muted">
-            Watching for errors. Open a localhost dev page and trigger one.
+      <main
+        className={`flex-1 overflow-auto px-3 py-2 ${
+          recent.length === 0 ? 'flex items-center justify-center' : ''
+        }`}
+      >
+        {!isDev ? (
+          <div className="text-center text-xs text-torya-muted">
+            Not a development tab.
+            <div className="mt-1 text-torya-muted-2">
+              Switch to a <code className="text-torya-text">localhost</code> page
+              to see live errors.
+            </div>
+          </div>
+        ) : recent.length === 0 ? (
+          <div className="text-center text-xs text-torya-muted">
+            Watching <span className="font-mono text-torya-text">{activeOrigin}</span>.
+            <div className="mt-1 text-torya-muted-2">
+              Trigger an error in the page and it will appear here.
+            </div>
           </div>
         ) : (
-          <ul className="space-y-1.5">
+          <ul className="w-full space-y-1.5">
             {recent.map((e) => (
               <LogRow key={e.id} err={e} />
             ))}
@@ -148,28 +181,117 @@ export function SidePanel() {
 }
 
 function LogRow({ err }: { err: DevError }) {
+  return (
+    <li className="rounded-md border border-torya-border bg-torya-surface text-xs">
+      <CapturedStep err={err} />
+      {err.run && <RunStep err={err} />}
+    </li>
+  );
+}
+
+function CapturedStep({ err }: { err: DevError }) {
   const ts = new Date(err.capturedAt).toLocaleTimeString();
   const where = err.meta.file
     ? `${trim(err.meta.file)}${err.meta.line ? `:${err.meta.line}` : ''}`
     : '';
-  const statusIcon =
-    err.status === 'running' ? '⚙️'
-    : err.status === 'fixed' ? '✅'
-    : err.status === 'failed' ? '⚠️'
-    : err.status === 'dismissed' ? '·'
-    : '🔴';
+  const sevColor =
+    err.severity === 'error' ? 'bg-torya-danger' : 'bg-torya-warn';
+  const sourceLabel =
+    err.source === 'network' ? 'Network'
+    : err.source === 'dom' ? 'DOM'
+    : 'Console';
+
   return (
-    <li className="rounded border border-torya-border bg-torya-surface px-2 py-1.5 text-xs">
-      <div className="flex items-baseline gap-2">
+    <div className="px-2.5 py-2">
+      <div className="flex items-center gap-2">
+        <span className={`size-2 shrink-0 rounded-full ${sevColor}`} title={err.severity} />
+        <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-torya-muted-2">
+          {sourceLabel}
+        </span>
         <span className="shrink-0 font-mono text-torya-muted">{ts}</span>
-        <span>{statusIcon}</span>
-        <span className="min-w-0 flex-1 truncate text-torya-text">{err.message}</span>
       </div>
+      <div className="mt-1 break-words text-torya-text">{err.message}</div>
       {where && (
-        <div className="ml-12 mt-0.5 truncate text-[11px] text-torya-muted">{where}</div>
+        <div className="mt-0.5 truncate font-mono text-[11px] text-torya-muted">
+          {where}
+        </div>
       )}
-    </li>
+    </div>
   );
+}
+
+function RunStep({ err }: { err: DevError }) {
+  const run = err.run!;
+  const isRunning = err.status === 'running';
+  const isFixed = err.status === 'fixed';
+  const isFailed = err.status === 'failed';
+
+  const elapsedMs = (run.endedAt ?? Date.now()) - run.startedAt;
+  const elapsed = formatDuration(elapsedMs);
+
+  const headerColor = isFixed
+    ? 'text-emerald-400'
+    : isFailed
+      ? 'text-torya-warn'
+      : 'text-torya-accent-strong';
+
+  const headerIcon = isRunning ? (
+    <Spinner />
+  ) : isFixed ? (
+    <span className="text-emerald-400">✓</span>
+  ) : isFailed ? (
+    <span className="text-torya-warn">✗</span>
+  ) : null;
+
+  const headerText = isRunning
+    ? `fixing in ${run.agent}`
+    : isFixed
+      ? `fix completed`
+      : isFailed
+        ? `agent run failed`
+        : `done`;
+
+  return (
+    <div className="border-t border-torya-border bg-torya-bg/40 px-2.5 py-2">
+      <div className="flex items-center gap-2">
+        <span className="shrink-0">{headerIcon}</span>
+        <span className={`shrink-0 text-[11px] font-semibold ${headerColor}`}>
+          {headerText}
+        </span>
+        <span className="shrink-0 rounded bg-torya-surface px-1.5 py-0.5 text-[10px] text-torya-muted">
+          {run.via}
+        </span>
+        <span className="ml-auto shrink-0 font-mono text-[11px] text-torya-muted">
+          {elapsed}
+        </span>
+      </div>
+      <div className="mt-1 line-clamp-2 text-[11px] text-torya-muted">
+        → {firstLine(run.prompt)}
+      </div>
+    </div>
+  );
+}
+
+function Spinner() {
+  return (
+    <span
+      className="inline-block size-3 animate-spin rounded-full border-2 border-torya-muted border-t-torya-accent-strong"
+      aria-label="working"
+    />
+  );
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  return `${m}m ${s % 60}s`;
+}
+
+function firstLine(s: string, max = 120): string {
+  const line = s.split('\n', 1)[0] ?? '';
+  return line.length > max ? line.slice(0, max - 1) + '…' : line;
 }
 
 function trim(s: string, max = 64): string {
