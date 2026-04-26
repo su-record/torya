@@ -26,11 +26,17 @@ import type {
 
 const log = (...a: unknown[]) => console.log('[torya:bg]', ...a);
 
-chrome.runtime.onInstalled.addListener(async () => {
-  log('installed');
+chrome.runtime.onInstalled.addListener(async (details) => {
+  log('installed', details.reason);
   await chrome.sidePanel
     .setPanelBehavior({ openPanelOnActionClick: true })
     .catch(() => undefined);
+  // Reload-the-extension is the user's "give me a clean slate" gesture.
+  // Drop captured errors so the side panel doesn't surface stale rows
+  // (e.g. a "fix completed" card from a previous session).
+  if (details.reason === 'install' || details.reason === 'update') {
+    await patch({ errors: [] });
+  }
 });
 
 // Fallback: explicit click handler in case openPanelOnActionClick is unset.
