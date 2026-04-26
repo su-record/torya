@@ -170,12 +170,20 @@ func (h *Handler) runAgent(req proto.Request) {
 
 	switch a.Terminal {
 	case "cmux":
-		if terminal.CmuxAvailable() {
+		st := terminal.CheckCmux()
+		if st.Available {
 			h.runWithSpawner(req, "cmux", terminal.Cmux(), a.Cwd, cmdLine, start)
 			return
 		}
-		// cmux selected but app not running — fall through to system so the
-		// user still sees something happen.
+		// cmux selected but unusable — surface the reason to the extension
+		// so the user can fix it (install CLI, start cmux app, etc.).
+		_ = h.w.Write(proto.Progress(req.ID, map[string]string{
+			"stage":      "fallback",
+			"from":       "cmux",
+			"to":         "system",
+			"reason":     st.Reason,
+			"foundBin":   st.Bin,
+		}))
 		via = "cmux-fallback"
 	case "silent":
 		h.runWithSpawner(req, "silent", terminal.Silent(), a.Cwd, cmdLine, start)
