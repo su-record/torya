@@ -19,6 +19,7 @@ import {
 import type {
   AgentInfo,
   AgentName,
+  AgentRun,
   BridgeResponse,
   ConsoleErrorPayload,
   DetectedProject,
@@ -191,11 +192,11 @@ async function handleMessage(msg: ExtMsg): Promise<unknown> {
 }
 
 // In-memory dedup: signature → last seen ts. Skip if seen within window.
-// Network errors get a longer window because a single underlying bug usually
-// produces a burst of identical 5xx (e.g. retries, parallel chunk uploads),
-// and we don't want to spam the side panel or the agent runner.
+// Network errors get a slightly longer window because a single underlying
+// bug usually produces a short burst of identical 5xx (e.g. parallel chunk
+// uploads), and we don't want a card per chunk.
 const DEDUP_WINDOW_MS = 5_000;
-const NETWORK_DEDUP_WINDOW_MS = 60_000;
+const NETWORK_DEDUP_WINDOW_MS = 10_000;
 const recentSignatures = new Map<string, number>();
 
 function shouldSkipDuplicate(sig: string, windowMs = DEDUP_WINDOW_MS): boolean {
@@ -213,10 +214,10 @@ function shouldSkipDuplicate(sig: string, windowMs = DEDUP_WINDOW_MS): boolean {
   return false;
 }
 
-// Per-workspace agent-run cooldown. Once an agent run starts for a workspace,
-// suppress further auto-triggers for AGENT_COOLDOWN_MS even if new errors come
-// in. The user can still manually re-run from the side panel.
-const AGENT_COOLDOWN_MS = 60_000;
+// Per-workspace agent-run cooldown. Short window — the in-flight `running`
+// check below is the real guard against parallel runs; this only debounces
+// rapid-fire triggers right after one completes.
+const AGENT_COOLDOWN_MS = 10_000;
 const lastAgentRunAt = new Map<string, number>();
 
 async function shouldAutoRunAgent(workspaceId: string): Promise<boolean> {
@@ -398,11 +399,24 @@ async function runAgentForError(id: string, agent: AgentName): Promise<{ ok: boo
   });
   const onMsg = (m: BridgeResponse) => {
     log('agent:', m.kind, m.data);
-    if (m.kind === 'progress') {
-      const d = m.data as { stage?: string; tracked?: boolean } | undefined;
-      if (d?.stage === 'started' && typeof d.tracked === 'boolean') {
-        tracked = d.tracked;
-      }
+    if (m.kind !== 'progress') return;
+    const d = m.data as
+      | { stage?: string; tracked?: boolean; via?: string; channel?: string }
+      | undefined;
+    if (!d) return;
+    // Bridge tells us its real channel — could differ from the user's
+    // setting (e.g. cmux fell back to system because cmux isn't running).
+    if (d.stage === 'spawn' && typeof d.via === 'string') {
+      const actual = d.via as AgentRun['via'];
+      void (async () => {
+        const cur = (await load()).errors.find((e) => e.id === id);
+        if (cur?.run && cur.run.via !== actual) {
+          await updateError(id, { run: { ...cur.run, via: actual } });
+        }
+      })();
+    }
+    if (d.stage === 'started' && typeof d.tracked === 'boolean') {
+      tracked = d.tracked;
     }
   };
   try {
