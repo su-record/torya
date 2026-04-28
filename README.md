@@ -113,6 +113,12 @@ round of polish:
 - **Universal agent system prompt** — a vendor-agnostic prompt that drives
   `claude`, `codex`, `gemini` (and friends) to the same fix quality, instead of
   per-agent tweaking.
+- **Prompt refinement layer** — today the bridge largely forwards captured
+  errors as-is. Next pass: a small refinement step that shapes the payload
+  before handoff — attaches the workspace tree, pulls in likely-related files
+  via grep, summarizes the stack, dedupes noisy renders, and normalizes the
+  prompt envelope across agents. Works for plain CLIs (stdout) as well as
+  protocol-aware ones.
 - **Direct mode (GA)** — finish and surface the currently-hidden API-key path so
   small fixes are applied as patches without spawning a terminal.
 - **Broader error coverage** — capture and route a wider range of failure modes
@@ -121,6 +127,42 @@ round of polish:
 - **Screenshot context for DOM errors** — when a DOM/visual hiccup is caught,
   attach the current viewport screenshot so the agent can reason about the
   rendered state, not just the stack trace.
+
+### 🔌 Agent Protocol (opt-in)
+
+A small JSON-over-stdio protocol that any agent CLI can implement to unlock
+richer side-panel UX. Plain CLIs keep working through stdout parsing — the
+protocol just adds structured channels on top, opted into via a `--torya`
+flag (or `TORYA_MODE=1`).
+
+What the protocol carries:
+
+- **Event stream out** — newline-delimited JSON over stdout:
+  `thinking`, `tool_call`, `tool_result`, `file_diff`, `approval_request`,
+  `done`. The panel renders these as a live activity feed instead of raw
+  terminal output.
+- **Structured context in** — error payload, DOM selector, viewport
+  screenshot, workspace tree, selected text — fed to the CLI as JSON on
+  stdin so the agent gets first-class typed context, not a flat string.
+- **Session ID** — same workspace = same session, so the agent can resume
+  yesterday's chat instead of starting cold every spawn.
+- **Approval round-trip** — risky tools (`Bash`, `Write`, `Edit`) pause and
+  emit `approval_request`; the panel renders it, the user clicks approve or
+  deny, and the panel writes the decision back over stdin.
+- **Diff preview** — `Write` / `Edit` tool calls emit before/after content
+  so the panel can render an inline diff before HMR reloads the page.
+- **Skill discovery** — `--list-skills` exposes the CLI's slash commands
+  (e.g. `/vibe.spec`, `/code-review`) as command palette entries inside
+  the panel.
+
+CLIs that don't speak the protocol stay supported as today — torya falls
+back to stdout parsing and the side panel renders a chat-style log without
+the structured affordances.
+
+Reference implementation: [`coco`](https://github.com/su-record/coco) is
+expected to ship `--torya` and the JSON event stream as a first-party
+client. The spec is intentionally small so any other agent CLI can adopt
+it without bridge changes — full text will live in `docs/AGENT-PROTOCOL.md`.
 
 ### 🔍 To audit
 
